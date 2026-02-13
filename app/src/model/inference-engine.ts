@@ -2,6 +2,8 @@ import * as tf from '@tensorflow/tfjs';
 import {customExtractor} from '../features/custom-extractor';
 import {RingBuffer} from './ring-buffer';
 
+export const STATE_IDLE = "Analyzing...";
+
 export class InferenceEngine {
     private static instance: InferenceEngine;
     private model: tf.LayersModel | null = null;
@@ -10,7 +12,8 @@ export class InferenceEngine {
     private buffer: RingBuffer;
     private lastPredictionTime = 0;
     private recentScores: number[][] = [];
-    private silenceThreshold = 0.005;
+    private silenceThreshold = 0.02;
+    private silenceCounter = 0;
 
     setThreshold(newThreshold: number) {
         this.silenceThreshold = Math.max(newThreshold, 0.002); // Never go below 0.002
@@ -73,13 +76,19 @@ export class InferenceEngine {
         console.log("🎤 Volume (RMS):", rms.toFixed(4));
 
         if (rms < this.silenceThreshold) {
-            if (this.buffer.isFull) {
-                this.buffer.clear();
-                console.log("🧹 Buffer Cleared due to silence");
+            if (this.silenceCounter > 25) {
+                this.dispatchSilence();
+                this.silenceCounter = 0; // Reset counter so we don't spam events
+
+                if (this.buffer.isFull) {
+                    this.buffer.clear();
+                    console.log("ｧｹ Buffer Cleared (Silence)");
+                }
             }
             return;
         }
 
+        this.silenceCounter = 0;
         this.buffer.write(chunk);
 
         if (this.buffer.isFull) {
@@ -91,6 +100,18 @@ export class InferenceEngine {
                 this.predict();
             }
         }
+    }
+
+    /**
+     * Helper to tell the UI "Nothing is happening"
+     */
+    private dispatchSilence() {
+        window.dispatchEvent(new CustomEvent('qari-found', {
+            detail: {
+                winner: {name: STATE_IDLE, score: 0},
+                others: []
+            }
+        }));
     }
 
     private async predict() {
@@ -149,8 +170,7 @@ export class InferenceEngine {
         if (isConfident && isClear) {
             finalWinner = winner;
         } else {
-            // If unsure, show "..." or the top guess but faded
-            finalWinner = {name: "Analyzing...", score: winner.score};
+            finalWinner = {name: STATE_IDLE, score: winner.score};
         }
 
         // 3. Dispatch

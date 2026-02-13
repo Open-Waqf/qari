@@ -6,7 +6,7 @@ import './components/ui/onboarding-modal';
 import './components/ui/status-pill';
 
 import {audioManager} from './core/audio-manager';
-import {inferenceEngine} from './model/inference-engine';
+import {inferenceEngine, STATE_IDLE} from './model/inference-engine';
 import {i18n} from './core/i18n';
 import {platform} from "./core/platform-service.ts";
 
@@ -253,11 +253,10 @@ class QariApp {
         if (history) history.qariMatches = others;
 
         // 2. Handle State Logic (Idle / Stabilizing / Match)
-        if (winner.name === "Analyzing...") {
-            // State: Listening / Analyzing
+        if (winner.name === STATE_IDLE) {
             pill.state = 'listening';
             pill.text = i18n.t.analyzing;
-            if (meter) meter.score = 0; // Reset meter while thinking
+            if (this.ui.meter) this.ui.meter.score = 0;
         } else if (winner.score < 0.6) {
             // State: Unsure / Stabilizing
             pill.state = 'stabilizing';
