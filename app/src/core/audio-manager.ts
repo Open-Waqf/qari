@@ -1,11 +1,12 @@
-import {platform} from "./platform-service.ts";
+// app/src/core/audio-manager.ts
+import {platform} from "./platform-service"; // .ts extension removed for standard resolution
 
 export class AudioManager {
     private static instance: AudioManager;
     private _context: AudioContext | null = null;
     public analyser: AnalyserNode | null = null;
     public worklet: AudioWorkletNode | null = null;
-    private isModuleLoaded = false; // Prevents double-loading errors
+    private isModuleLoaded = false;
 
     private constructor() {
         window.addEventListener('app-state-change', (e: any) => {
@@ -25,10 +26,8 @@ export class AudioManager {
             // iOS/Android WebViews usually need this specific config for best latency
             const options: AudioContextOptions = {
                 latencyHint: platform.isNative ? 'playback' : 'interactive',
-                sampleRate: 44100 // Force standard rate if possible
             };
 
-            // Handle Webkit prefix for older iOS WebViews if necessary
             const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
             this._context = new AudioContextClass(options);
 
@@ -44,11 +43,7 @@ export class AudioManager {
             throw new Error("Microphone permission missing");
         }
 
-        if (window.hasOwnProperty('Capacitor')) {
-            console.log("📱 Mobile Native Environment Detected");
-        }
-
-        // 1. Force Resume (Crucial for Chrome/Edge)
+        // 1. Force Resume
         if (this.context.state === 'suspended') {
             await this.context.resume();
         }
@@ -56,13 +51,14 @@ export class AudioManager {
         // 2. Load the processor once
         if (!this.isModuleLoaded) {
             try {
-                // Fix for Vite assets in Capacitor (File protocol issues)
-                const workletUrl = new URL('/processors/resampler-processor.js', import.meta.url).href;
-                await this.context.audioWorklet.addModule(workletUrl);
+                await this.context.audioWorklet.addModule('/processors/resampler-processor.js');
                 this.isModuleLoaded = true;
             } catch (e) {
                 console.error("AudioWorklet Load Failed. Are paths correct in dist?", e);
-                throw e;
+                // Reset context to ensure clean state on retry
+                this._context?.close();
+                this._context = null;
+                throw new Error(`Worklet Load Failed: ${e}`);
             }
         }
 
@@ -70,7 +66,7 @@ export class AudioManager {
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 channelCount: 1,
-                echoCancellation: platform.isNative, // Turn ON for native (hardware specific)
+                echoCancellation: platform.isNative,
                 noiseSuppression: platform.isNative,
                 autoGainControl: false,
             }
@@ -78,12 +74,21 @@ export class AudioManager {
 
         const source = this.context.createMediaStreamSource(stream);
 
-        // Clean up old worklet if it exists
-        if (this.worklet) this.worklet.disconnect();
+        // Clean up old worklet
+        if (this.worklet) {
+            this.worklet.disconnect();
+            this.worklet = null;
+        }
 
-        this.worklet = new AudioWorkletNode(this.context, 'resampler-processor');
+        // 4. Create Worklet Node
+        // If this throws "Unknown AudioWorklet name", it means addModule failed silently above
+        try {
+            this.worklet = new AudioWorkletNode(this.context, 'resampler-processor');
+        } catch (e) {
+            throw new Error(`Worklet Registered incorrectly. Did the file load? ${e}`);
+        }
 
-        // 4. Connect the Graph
+        // 5. Connect the Graph
         source.connect(this.analyser!);
         source.connect(this.worklet);
 
@@ -95,24 +100,19 @@ export class AudioManager {
         this.worklet.port.onmessage = (e) => onDataReceived(e.data);
 
         platform.hapticSuccess();
-        console.log("🎤 Microphone and Resampler Active at", this.context.sampleRate, "Hz");
+        console.log(`🎤 Mic Active at ${this.context.sampleRate} Hz`);
     }
 
-    /**
-     * Stops the microphone and releases the hardware stream.
-     * Essential for resetting the state between calibration and live mode.
-     */
     stop() {
         if (this.worklet) {
             this.worklet.disconnect();
             this.worklet = null;
         }
         if (this._context) {
-            // Closing the context fully releases the microphone hardware
             this._context.close();
             this._context = null;
         }
-        this.isModuleLoaded = false; // Reset so next start re-loads the processor
+        this.isModuleLoaded = false;
         console.log("🛑 Microphone Hardware Released.");
     }
 }

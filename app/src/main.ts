@@ -74,6 +74,7 @@ class QariApp {
      * Renders the base HTML structure of the application.
      */
     private renderShell() {
+        const appVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0';
         this.root.innerHTML = `
         <onboarding-modal id="onboard"></onboarding-modal>
         
@@ -117,6 +118,7 @@ class QariApp {
           <div id="control-layer" class="control-area">
             <button id="start-btn" class="primary-btn">Initialize Engine</button>
           </div>
+          <div class="version-tag">v${appVersion}</div>
         </div>
         `;
     }
@@ -152,6 +154,38 @@ class QariApp {
                 this.startEngine();
             });
         });
+
+        window.addEventListener('app-state-change', (e: any) => this.handleAppState(e.detail.isActive));
+    }
+
+    /**
+     * NEW: Handle UI updates when App goes to Background or Foreground
+     */
+    private handleAppState(isActive: boolean) {
+        if (!isActive) {
+            console.log("💤 UI Detected Background Mode");
+
+            // A. Update the Status Pill
+            if (this.ui.pill) {
+                this.ui.pill.state = 'idle';
+                this.ui.pill.text = "Paused"; // or use i18n.t.paused
+            }
+
+            // B. Bring back the "Start/Resume" button
+            if (this.ui.startBtn) {
+                this.ui.startBtn.innerText = "▶ Resume";
+                this.ui.startBtn.removeAttribute('disabled');
+
+                // Un-hide the control layer
+                if (this.ui.startBtn.parentElement) {
+                    this.ui.startBtn.parentElement.style.display = 'block';
+                }
+            }
+
+            // C. Turn off the "Online" light
+            this.ui.statusDot?.classList.remove('online');
+            this.ui.statusDot?.classList.remove('active-pulse');
+        }
     }
 
     /**
@@ -175,14 +209,20 @@ class QariApp {
             if (isOnline) {
                 if (this.ui.startBtn.parentElement) this.ui.startBtn.parentElement.style.display = 'none';
                 this.ui.statusDot?.classList.add('online');
-            } else {
-                this.ui.startBtn.innerText = "🚨 Brain Offline (Reload)";
-                this.ui.startBtn.removeAttribute('disabled');
-                this.ui.startBtn.classList.add('error-btn');
             }
-        } catch (err) {
-            this.ui.startBtn.innerText = "❌ Mic Access Denied";
+        } catch (err: any) {
+            console.error("🔥 Engine Start Error:", err);
+
+            // FIX: Show the specific error message to the user
+            let msg = "❌ Error";
+            if (err.message.includes("Worklet")) msg = "❌ Missing File (404)";
+            else if (err.message.includes("Permission")) msg = "❌ Mic Denied";
+            else if (err.name === "NotAllowedError") msg = "❌ Mic Denied";
+            else msg = `❌ ${err.name || "Error"}`;
+
+            this.ui.startBtn.innerText = msg;
             this.ui.startBtn.removeAttribute('disabled');
+            this.ui.startBtn.classList.add('error-btn');
         }
     }
 

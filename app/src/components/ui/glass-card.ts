@@ -6,6 +6,8 @@ export class GlassCard extends LitElement {
     static styles = css`
         :host {
             display: block;
+            box-sizing: border-box;
+            width: 100%;
             background: rgba(20, 25, 35, 0.6); /* Slightly darker for contrast */
             backdrop-filter: blur(24px) saturate(180%); /* iOS-style blur */
             -webkit-backdrop-filter: blur(24px) saturate(180%);

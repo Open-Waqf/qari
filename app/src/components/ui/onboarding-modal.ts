@@ -1,6 +1,6 @@
 import {css, html, LitElement} from 'lit';
 import {customElement, property} from 'lit/decorators.js';
-import {audioManager} from "../../core/audio-manager.ts";
+import {audioManager} from "../../core/audio-manager.ts"; // Removed .ts if using bundler, but keeping per your setup
 import {inferenceEngine} from "../../model/inference-engine.ts";
 
 @customElement('onboarding-modal')
@@ -23,6 +23,10 @@ export class OnboardingModal extends LitElement {
             align-items: center;
             backdrop-filter: blur(10px);
             transition: opacity 0.3s ease;
+
+            padding: 24px;
+            padding-bottom: env(safe-area-inset-bottom); /* Respect Home Bar */
+            box-sizing: border-box;
         }
 
         :host([hidden]) {
@@ -34,7 +38,12 @@ export class OnboardingModal extends LitElement {
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 24px;
             padding: 32px;
+
+            box-sizing: border-box;
+
+            width: 100%;
             max-width: 340px;
+
             text-align: center;
             box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
         }
@@ -103,6 +112,22 @@ export class OnboardingModal extends LitElement {
             font-size: 0.85rem;
             cursor: pointer;
             text-decoration: underline;
+        }
+        
+        .calibration-loader {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(0, 119, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: #0077ff;
+            animation: spin 1s ease-in-out infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
         }
     `;
 

@@ -25,10 +25,13 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
   "include": [
-    "src"
+    "src",
+    "vite.config.ts"
   ]
 }

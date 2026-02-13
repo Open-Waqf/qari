@@ -44,8 +44,7 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
-    overflow: hidden;
-    /* Cyber Grid Background */
+    overflow: hidden; /* Default for desktop */
     background-image: linear-gradient(rgba(0, 119, 255, 0.03) 1px, transparent 1px),
     linear-gradient(90deg, rgba(0, 119, 255, 0.03) 1px, transparent 1px);
     background-size: 40px 40px;
@@ -60,7 +59,11 @@ body {
     position: absolute;
     top: 20px;
     right: 20px;
-    z-index: 100; /* Increased to ensure it's clickable */
+    z-index: 100;
+    /* This makes them sit side-by-side, centered */
+    display: flex;
+    align-items: center;
+    gap: 12px;
 }
 
 /* FIX: Correct selector for global RTL support */
@@ -224,6 +227,19 @@ body {
 /* Helper for fade-in animations */
 .fade-in {
     animation: fadeIn 0.5s ease-out;
+
+    width: 100%;
+    max-width: 420px;
+    margin: 0 auto;
+
+    /* VITAL: Add padding so content doesn't touch fixed elements */
+    padding-top: 80px; /* Clear the Top Bar */
+    padding-bottom: 60px; /* Clear the Version Tag */
+    padding-left: 24px; /* Side gutters */
+    padding-right: 24px;
+
+    box-sizing: border-box;
+    position: relative;
 }
 
 @keyframes fadeIn {
@@ -270,10 +286,40 @@ error-btn {
 }
 
 /* Use a cleaner SVG icon instead of the 🔄 emoji */
-.recalibrate-icon {
-    width: 20px;
-    height: 20px;
-    fill: currentColor;
+.recalibrate-svg {
+    width: 24px;
+    height: 24px;
+    fill: none; /* No background fill */
+    stroke: currentColor; /* Uses the text color (#0077ff) */
+    stroke-width: 2; /* Thickness of the lines */
+    stroke-linecap: round; /* Rounded line ends */
+    stroke-linejoin: round;
+}
+
+@media (max-height: 750px) {
+    /* Increased threshold slightly */
+    body {
+        align-items: flex-start; /* Start from top, not center */
+        height: auto;
+        min-height: 100vh;
+        overflow-y: auto; /* Allow scrolling */
+        /* Remove body padding here since .fade-in handles it now */
+        padding-top: 0;
+    }
+}
+
+.version-tag {
+    position: fixed;
+    bottom: 10px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 0.7rem;
+    color: rgba(255, 255, 255, 0.2); /* Very subtle */
+    pointer-events: none; /* Don't block clicks */
+    font-family: 'JetBrains Mono', monospace;
+    z-index: 50;
+    padding-bottom: env(safe-area-inset-bottom);
 }
 
 .card {
