@@ -34,6 +34,7 @@ class QariApp {
     };
 
     private deferredPrompt: any = null;
+    private lastHistoryKey = "";
 
     constructor(private root: HTMLElement) {
         // 1. Render the initial HTML Shell
@@ -240,6 +241,23 @@ class QariApp {
         }
     }
 
+    private updateHistoryDeferred(others: any[]) {
+        const key = others
+            .map(o => `${o.name}:${Math.round(o.score * 100)}`)
+            .join("|");
+
+        if (key === this.lastHistoryKey) return;
+        this.lastHistoryKey = key;
+
+        const doUpdate = () => {
+            if (this.ui.history) this.ui.history.qariMatches = others;
+        };
+
+        const ric = (window as any).requestIdleCallback as undefined | ((cb: any, opts?: any) => void);
+        if (ric) ric(doUpdate, {timeout: 200});
+        else requestAnimationFrame(doUpdate);
+    }
+
     /**
      * Logic for updating the UI based on AI prediction confidence.
      */
@@ -247,10 +265,9 @@ class QariApp {
         const {winner, others} = detail;
         const pill = this.ui.pill;
         const meter = this.ui.meter;
-        const history = this.ui.history;
 
         // 1. Update Match History (Always show candidates)
-        if (history) history.qariMatches = others;
+        this.updateHistoryDeferred(others);
 
         // 2. Handle State Logic (Idle / Stabilizing / Match)
         if (winner.name === STATE_IDLE) {

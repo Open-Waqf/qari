@@ -62,7 +62,7 @@ export class MatchHistory extends LitElement {
 
         return html`
             <span class="title">${title}</span>
-            ${this.qariMatches.map(m => html`
+            ${this.qariMatches.slice(0, 5).map(m => html`
                 <div class="match-card">
                     <span class="match-name">${m.name}</span>
                     <span class="match-score">${(m.score * 100).toFixed(0)}%</span>
