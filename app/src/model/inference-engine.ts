@@ -15,6 +15,20 @@ export class InferenceEngine {
     private recentScores: number[][] = [];
     private silenceThreshold = 0.02; // Increased to ignore fans/AC
     private silenceCounter = 0;
+    private lastWinnerName: string | null = null;
+    private stabilityCounter = 0;
+    private REQUIRED_STABILITY = 2;
+
+    // Helper: Calculate Entropy (Confusion Level)
+    private calculateEntropy(probs: number[]): number {
+        let entropy = 0;
+        for (const p of probs) {
+            if (p > 0) {
+                entropy -= p * Math.log(p);
+            }
+        }
+        return entropy;
+    }
 
     setThreshold(newThreshold: number) {
         this.silenceThreshold = Math.max(newThreshold, 0.002); // Never go below 0.002
@@ -141,6 +155,15 @@ export class InferenceEngine {
         const probs = await prediction.data();
         prediction.dispose();
 
+        // 1. Calculate Entropy (The "Unknown" Detector)
+        // High Entropy = Flat distribution = Confused AI
+        // Low Entropy = Spike distribution = Confident AI
+        const entropy = this.calculateEntropy(Array.from(probs));
+
+        // Threshold: ~1.5 is usually a good cutoff for softmax across ~10-20 classes.
+        // If your class count is high, this might need tuning (try 2.0).
+        const isConfused = entropy > 1.5;
+
         // 1. Smoothing
         this.recentScores.push(Array.from(probs));
         if (this.recentScores.length > 5) this.recentScores.shift();
@@ -157,22 +180,38 @@ export class InferenceEngine {
 
         const allMatches = this.labels.map((name, i) => ({
             name: name.replace(/_/g, ' ').toUpperCase(),
-            score: averagedProbs[i]
+            score: probs[i] // Use raw probs for sharpness, or averagedProbs for smooth
         }));
 
         const sorted = allMatches.sort((a, b) => b.score - a.score);
-        const winner = sorted[0];
-        const runnerUp = sorted[1];
+        const topCandidate = sorted[0];
 
-        const isConfident = winner.score > 0.40;
-        const isClear = runnerUp ? (winner.score - runnerUp.score > 0.10) : true;
+        let finalWinner = {name: STATE_IDLE, score: 0};
 
-        let finalWinner;
-        if (isConfident && isClear) {
-            finalWinner = winner;
+        // 2. The Gating Logic
+        if (!isConfused && topCandidate.score > 0.45) {
+
+            // 3. Stability Check
+            if (topCandidate.name === this.lastWinnerName) {
+                this.stabilityCounter++;
+            } else {
+                this.stabilityCounter = 0;
+                this.lastWinnerName = topCandidate.name;
+            }
+
+            if (this.stabilityCounter >= this.REQUIRED_STABILITY) {
+                finalWinner = topCandidate;
+            } else {
+                // We have a candidate, but not stable yet.
+                // Option: Show "Analyzing..." or the previous stable winner
+                // Let's show "Analyzing..." to prevent flickering
+                finalWinner = {name: STATE_IDLE, score: topCandidate.score};
+            }
         } else {
-            // Return IDLE state if unsure, so UI keeps listening
-            finalWinner = {name: STATE_IDLE, score: winner.score};
+            // AI is confused (High Entropy) -> Reset Stability
+            this.stabilityCounter = 0;
+            this.lastWinnerName = null;
+            finalWinner = {name: STATE_IDLE, score: 0};
         }
 
         window.dispatchEvent(new CustomEvent('qari-found', {
