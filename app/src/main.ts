@@ -8,6 +8,7 @@ import './components/ui/status-pill';
 import {audioManager} from './core/audio-manager';
 import {inferenceEngine} from './model/inference-engine';
 import {i18n} from './core/i18n';
+import {platform} from "./core/platform-service.ts";
 
 /**
  * Main Application Controller
@@ -208,6 +209,9 @@ class QariApp {
             pill.state = 'stabilizing';
             pill.text = i18n.t.stabilizing;
         } else {
+            if (this.ui.pill.state !== 'match') {
+                platform.hapticSuccess(); // 📳 Bzzzt!
+            }
             // State: Confirmed Match
             pill.state = 'match';
             pill.text = i18n.t.confirmed;

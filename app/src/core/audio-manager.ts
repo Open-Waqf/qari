@@ -1,3 +1,5 @@
+import {platform} from "./platform-service.ts";
+
 export class AudioManager {
     private static instance: AudioManager;
     private _context: AudioContext | null = null;
@@ -6,6 +8,12 @@ export class AudioManager {
     private isModuleLoaded = false; // Prevents double-loading errors
 
     private constructor() {
+        window.addEventListener('app-state-change', (e: any) => {
+            if (!e.detail.isActive) {
+                console.log("⏸️ App Backgrounded - Stopping Audio");
+                this.stop();
+            }
+        });
     }
 
     static getInstance() {
@@ -14,13 +22,27 @@ export class AudioManager {
 
     get context(): AudioContext {
         if (!this._context) {
-            this._context = new AudioContext();
+            // iOS/Android WebViews usually need this specific config for best latency
+            const options: AudioContextOptions = {
+                latencyHint: platform.isNative ? 'playback' : 'interactive',
+                sampleRate: 44100 // Force standard rate if possible
+            };
+
+            // Handle Webkit prefix for older iOS WebViews if necessary
+            const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+            this._context = new AudioContextClass(options);
+
             this.analyser = this._context.createAnalyser();
         }
         return this._context;
     }
 
     async start(onDataReceived: (data: Float32Array) => void) {
+
+        const canRecord = await platform.checkMicPermission();
+        if (!canRecord) {
+            throw new Error("Microphone permission missing");
+        }
 
         if (window.hasOwnProperty('Capacitor')) {
             console.log("📱 Mobile Native Environment Detected");
@@ -33,19 +55,25 @@ export class AudioManager {
 
         // 2. Load the processor once
         if (!this.isModuleLoaded) {
-            const workletUrl = new URL('/processors/resampler-processor.js', import.meta.url).href;
-            await this.context.audioWorklet.addModule(workletUrl);
-            this.isModuleLoaded = true;
+            try {
+                // Fix for Vite assets in Capacitor (File protocol issues)
+                const workletUrl = new URL('/processors/resampler-processor.js', import.meta.url).href;
+                await this.context.audioWorklet.addModule(workletUrl);
+                this.isModuleLoaded = true;
+            } catch (e) {
+                console.error("AudioWorklet Load Failed. Are paths correct in dist?", e);
+                throw e;
+            }
         }
 
         // 3. Request Mic
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 channelCount: 1,
-                echoCancellation: false,
-                noiseSuppression: false,
+                echoCancellation: platform.isNative, // Turn ON for native (hardware specific)
+                noiseSuppression: platform.isNative,
                 autoGainControl: false,
-            } as any
+            }
         });
 
         const source = this.context.createMediaStreamSource(stream);
@@ -66,6 +94,7 @@ export class AudioManager {
 
         this.worklet.port.onmessage = (e) => onDataReceived(e.data);
 
+        platform.hapticSuccess();
         console.log("🎤 Microphone and Resampler Active at", this.context.sampleRate, "Hz");
     }
 

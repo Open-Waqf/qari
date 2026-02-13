@@ -20,11 +20,13 @@
   },
   "dependencies": {
     "@capacitor/android": "8.1.0",
+    "@capacitor/app": "8.0.1",
     "@capacitor/cli": "8.1.0",
     "@capacitor/core": "8.1.0",
     "@capacitor/filesystem": "8.1.1",
     "@capacitor/haptics": "8.0.0",
     "@capacitor/ios": "8.1.0",
+    "@capacitor/status-bar": "8.0.1",
     "@tensorflow/tfjs": "4.22.0",
     "@tensorflow/tfjs-backend-webgl": "4.22.0",
     "lit": "3.3.2",

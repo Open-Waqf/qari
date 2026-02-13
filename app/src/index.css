@@ -38,7 +38,6 @@
 /* 3. Base Styles */
 body {
     margin: 0;
-    background-color: var(--bg-dark);
     color: var(--text-main);
     font-family: 'Inter', 'Segoe UI', 'Tahoma', sans-serif;
     height: 100vh;
@@ -51,10 +50,13 @@ body {
     linear-gradient(90deg, rgba(0, 119, 255, 0.03) 1px, transparent 1px);
     background-size: 40px 40px;
     animation: scan 10s linear infinite;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    background-color: #02040a;
 }
 
 /* --- Language Toggle Bar --- */
 .top-bar {
+    padding-top: env(safe-area-inset-top);
     position: absolute;
     top: 20px;
     right: 20px;
@@ -292,5 +294,7 @@ error-btn {
 }
 
 @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+        transform: rotate(360deg);
+    }
 }
