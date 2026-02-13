@@ -3,8 +3,7 @@ import {customElement, property} from 'lit/decorators.js';
 
 @customElement('match-history')
 export class MatchHistory extends LitElement {
-    // Fix TS2416: Explicitly type and initialize
-    @property({type: Array})
+    // FIX: Removed duplicate @property decorator
     @property({type: Array}) qariMatches: any[] = [];
     @property({type: Object}) dict: any = null;
 
@@ -58,7 +57,9 @@ export class MatchHistory extends LitElement {
 
     render() {
         if (this.qariMatches.length === 0) return html``;
+        // Use dictionary for title if available
         const title = this.dict ? this.dict.imitationTitle : 'Imitation Analysis';
+
         return html`
             <span class="title">${title}</span>
             ${this.qariMatches.map(m => html`

@@ -2,17 +2,18 @@ import * as tf from '@tensorflow/tfjs';
 import {customExtractor} from '../features/custom-extractor';
 import {RingBuffer} from './ring-buffer';
 
+// CONSTANT for System ID (Do not translate this)
 export const STATE_IDLE = "Analyzing...";
 
 export class InferenceEngine {
     private static instance: InferenceEngine;
     private model: tf.LayersModel | null = null;
     private labels: string[] = [];
-    private normalization = {mean: 0, std: 1}; // Default values
+    private normalization = {mean: 0, std: 1};
     private buffer: RingBuffer;
     private lastPredictionTime = 0;
     private recentScores: number[][] = [];
-    private silenceThreshold = 0.02;
+    private silenceThreshold = 0.02; // Increased to ignore fans/AC
     private silenceCounter = 0;
 
     setThreshold(newThreshold: number) {
@@ -33,21 +34,25 @@ export class InferenceEngine {
 
     async setup(): Promise<boolean> {
         try {
-            // Ensure TFJS is ready
             await tf.ready();
 
-            // 1. Load Audio Physics
-            await customExtractor.loadConfig();
+            // OPTIMIZATION: Use WebGL or WASM if available for speed
+            if (tf.findBackend('wasm')) {
+                await tf.setBackend('wasm');
+                console.log("⚡ Using WASM Backend");
+            } else if (tf.findBackend('webgl')) {
+                await tf.setBackend('webgl');
+                // Tweak WebGL for mobile performance
+                tf.env().set('WEBGL_PACK', false);
+                console.log("⚡ Using WebGL Backend");
+            }
 
-            // 2. Load the Model
-            // No cache busting as requested
+            await customExtractor.loadConfig();
             this.model = await tf.loadLayersModel('/models/tfjs_model/model.json');
 
-            // 3. Load Labels (Deterministic Array)
             const res = await fetch('/models/reciters_map.json');
             this.labels = await res.json();
 
-            // 4. Load Normalization
             try {
                 const normRes = await fetch('/models/normalization.json');
                 if (normRes.ok) {
@@ -65,8 +70,6 @@ export class InferenceEngine {
         }
     }
 
-    // app/src/model/inference-engine.ts
-
     handleIncomingAudio(chunk: Float32Array) {
         let sum = 0;
         for (let i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
@@ -76,10 +79,10 @@ export class InferenceEngine {
         console.log("🎤 Volume (RMS):", rms.toFixed(4));
 
         if (rms < this.silenceThreshold) {
-            if (this.silenceCounter > 25) {
+            this.silenceCounter++;
+            if (this.silenceCounter > 25) { // ~1 second of silence
                 this.dispatchSilence();
-                this.silenceCounter = 0; // Reset counter so we don't spam events
-
+                this.silenceCounter = 0;
                 if (this.buffer.isFull) {
                     this.buffer.clear();
                     console.log("ｧｹ Buffer Cleared (Silence)");
@@ -117,13 +120,17 @@ export class InferenceEngine {
     private async predict() {
         if (!this.model) return;
 
+        // FIX: Yield to Main Thread!
+        // This tiny pause allows the UI to render "Analyzing..."
+        // BEFORE the heavy math freezes the screen.
+        await new Promise(resolve => setTimeout(resolve, 10));
+
         const signal = this.buffer.read();
 
         const prediction = tf.tidy(() => {
             const input = customExtractor.extractFullClip(signal);
             const batch = input.expandDims(0);
 
-            // Use loaded normalization (or default to safe values)
             const mean = this.normalization.mean || -0.77;
             const std = this.normalization.std || 5.20;
 
@@ -134,7 +141,7 @@ export class InferenceEngine {
         const probs = await prediction.data();
         prediction.dispose();
 
-        // --- 1. SMOOTHING (Moving Average) ---
+        // 1. Smoothing
         this.recentScores.push(Array.from(probs));
         if (this.recentScores.length > 5) this.recentScores.shift();
 
@@ -153,27 +160,21 @@ export class InferenceEngine {
             score: averagedProbs[i]
         }));
 
-        // --- 2. SMART DECISION LOGIC ---
         const sorted = allMatches.sort((a, b) => b.score - a.score);
         const winner = sorted[0];
         const runnerUp = sorted[1];
 
-        // Rule A: Minimum Confidence (Must be at least 40% sure)
         const isConfident = winner.score > 0.40;
-
-        // Rule B: Clarity Gap (Must beat the runner-up by at least 10%)
-        // Prevents flickering when the AI is "confused" between two similar voices
         const isClear = runnerUp ? (winner.score - runnerUp.score > 0.10) : true;
 
         let finalWinner;
-
         if (isConfident && isClear) {
             finalWinner = winner;
         } else {
+            // Return IDLE state if unsure, so UI keeps listening
             finalWinner = {name: STATE_IDLE, score: winner.score};
         }
 
-        // 3. Dispatch
         window.dispatchEvent(new CustomEvent('qari-found', {
             detail: {
                 winner: finalWinner,

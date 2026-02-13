@@ -113,12 +113,12 @@ class QariApp {
             <button id="install-btn" class="secondary-btn" style="display: none; margin-top: 15px;">
                 📥 Install App
             </button>
+            <div class="version-tag">v${appVersion}</div>
           </glass-card>
     
           <div id="control-layer" class="control-area">
             <button id="start-btn" class="primary-btn">Initialize Engine</button>
           </div>
-          <div class="version-tag">v${appVersion}</div>
         </div>
         `;
     }
