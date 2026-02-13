@@ -15,19 +15,25 @@ export class InferenceEngine {
     private recentScores: number[][] = [];
     private silenceThreshold = 0.02; // Increased to ignore fans/AC
     private silenceCounter = 0;
-    private lastWinnerName: string | null = null;
-    private stabilityCounter = 0;
+    private noiseFloor = 0.005;     // adaptive baseline
+    private pendingWinner: string | null = null;
+    private pendingCount = 0;
+    private stableWinner: { name: string; score: number } | null = null;
     private REQUIRED_STABILITY = 2;
 
-    // Helper: Calculate Entropy (Confusion Level)
-    private calculateEntropy(probs: number[]): number {
-        let entropy = 0;
+    private entropy(probs: number[]): number {
+        let h = 0;
         for (const p of probs) {
-            if (p > 0) {
-                entropy -= p * Math.log(p);
-            }
+            if (p > 0) h -= p * Math.log(p); // natural log
         }
-        return entropy;
+        return h;
+    }
+
+    private entropyNormalized(probs: number[]): number {
+        const n = probs.length;
+        if (n <= 1) return 0;
+        const h = this.entropy(probs);
+        return h / Math.log(n); // 0..1
     }
 
     setThreshold(newThreshold: number) {
@@ -85,22 +91,29 @@ export class InferenceEngine {
     }
 
     handleIncomingAudio(chunk: Float32Array) {
+        // RMS
         let sum = 0;
         for (let i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
         const rms = Math.sqrt(sum / chunk.length);
 
-        // 🔍 DEBUG LOG: See if your mic is loud enough
         console.log("🎤 Volume (RMS):", rms.toFixed(4));
 
-        if (rms < this.silenceThreshold) {
+        // Adaptive noise floor update (only update when quiet-ish)
+        // This makes it work across quiet/loud phones.
+        if (rms < this.noiseFloor * 1.5) {
+            this.noiseFloor = 0.995 * this.noiseFloor + 0.005 * rms;
+        }
+
+        // Dynamic speech gate
+        const gate = Math.max(this.silenceThreshold, this.noiseFloor * 3.0);
+        const isSpeech = rms >= gate;
+
+        if (!isSpeech) {
             this.silenceCounter++;
-            if (this.silenceCounter > 25) { // ~1 second of silence
+            if (this.silenceCounter > 25) {
                 this.dispatchSilence();
-                this.silenceCounter = 0;
-                if (this.buffer.isFull) {
-                    this.buffer.clear();
-                    console.log("ｧｹ Buffer Cleared (Silence)");
-                }
+                this.resetState();
+                console.log("ｧｹ Buffer Cleared (Silence)");
             }
             return;
         }
@@ -119,6 +132,14 @@ export class InferenceEngine {
         }
     }
 
+    private resetState() {
+        this.buffer.clear();
+        this.recentScores = [];
+        this.pendingWinner = null;
+        this.pendingCount = 0;
+        this.stableWinner = null;
+    }
+
     /**
      * Helper to tell the UI "Nothing is happening"
      */
@@ -133,91 +154,74 @@ export class InferenceEngine {
 
     private async predict() {
         if (!this.model) return;
-
-        // FIX: Yield to Main Thread!
-        // This tiny pause allows the UI to render "Analyzing..."
-        // BEFORE the heavy math freezes the screen.
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise(r => setTimeout(r, 0));
 
         const signal = this.buffer.read();
 
         const prediction = tf.tidy(() => {
             const input = customExtractor.extractFullClip(signal);
             const batch = input.expandDims(0);
-
             const mean = this.normalization.mean || -0.77;
             const std = this.normalization.std || 5.20;
-
-            const normalized = batch.sub(mean).div(std);
-            return this.model!.predict(normalized) as tf.Tensor;
+            return this.model!.predict(batch.sub(mean).div(std)) as tf.Tensor;
         });
 
-        const probs = await prediction.data();
+        const probs = Array.from(await prediction.data());
         prediction.dispose();
 
-        // 1. Calculate Entropy (The "Unknown" Detector)
-        // High Entropy = Flat distribution = Confused AI
-        // Low Entropy = Spike distribution = Confident AI
-        const entropy = this.calculateEntropy(Array.from(probs));
-
-        // Threshold: ~1.5 is usually a good cutoff for softmax across ~10-20 classes.
-        // If your class count is high, this might need tuning (try 2.0).
-        const isConfused = entropy > 1.5;
-
-        // 1. Smoothing
-        this.recentScores.push(Array.from(probs));
+        // smoothing
+        this.recentScores.push(probs);
         if (this.recentScores.length > 5) this.recentScores.shift();
 
-        const averagedProbs = new Array(probs.length).fill(0);
-        for (const scoreArr of this.recentScores) {
-            for (let i = 0; i < scoreArr.length; i++) {
-                averagedProbs[i] += scoreArr[i];
-            }
-        }
-        for (let i = 0; i < averagedProbs.length; i++) {
-            averagedProbs[i] /= this.recentScores.length;
-        }
+        const avg = new Array(probs.length).fill(0);
+        for (const s of this.recentScores) for (let i = 0; i < s.length; i++) avg[i] += s[i];
+        for (let i = 0; i < avg.length; i++) avg[i] /= this.recentScores.length;
 
-        const allMatches = this.labels.map((name, i) => ({
+        // gating inputs
+        const ent = this.entropyNormalized(avg);
+
+        const matches = this.labels.map((name, i) => ({
             name: name.replace(/_/g, ' ').toUpperCase(),
-            score: probs[i] // Use raw probs for sharpness, or averagedProbs for smooth
-        }));
+            score: avg[i],
+        })).sort((a, b) => b.score - a.score);
 
-        const sorted = allMatches.sort((a, b) => b.score - a.score);
-        const topCandidate = sorted[0];
+        const top1 = matches[0];
+        const top2 = matches[1];
+        const ratio = top2?.score ? (top1.score / top2.score) : Infinity;
+        const diff = top2 ? (top1.score - top2.score) : top1.score;
 
-        let finalWinner = {name: STATE_IDLE, score: 0};
+        // tuned gates (good starting points)
+        const notConfused = ent < 0.75;          // 0..1
+        const strongTop1 = top1.score > 0.45;
+        const clearWin = (ratio > 1.25) && (diff > 0.08);
 
-        // 2. The Gating Logic
-        if (!isConfused && topCandidate.score > 0.45) {
+        let winner = {name: STATE_IDLE, score: 0};
 
-            // 3. Stability Check
-            if (topCandidate.name === this.lastWinnerName) {
-                this.stabilityCounter++;
+        if (notConfused && strongTop1 && clearWin) {
+            // stability / hysteresis
+            if (this.pendingWinner === top1.name) {
+                this.pendingCount++;
             } else {
-                this.stabilityCounter = 0;
-                this.lastWinnerName = topCandidate.name;
+                this.pendingWinner = top1.name;
+                this.pendingCount = 1; // <-- key fix
             }
 
-            if (this.stabilityCounter >= this.REQUIRED_STABILITY) {
-                finalWinner = topCandidate;
-            } else {
-                // We have a candidate, but not stable yet.
-                // Option: Show "Analyzing..." or the previous stable winner
-                // Let's show "Analyzing..." to prevent flickering
-                finalWinner = {name: STATE_IDLE, score: topCandidate.score};
+            if (this.pendingCount >= this.REQUIRED_STABILITY) {
+                this.stableWinner = top1;
             }
+
+            winner = this.stableWinner ?? {name: STATE_IDLE, score: top1.score};
         } else {
-            // AI is confused (High Entropy) -> Reset Stability
-            this.stabilityCounter = 0;
-            this.lastWinnerName = null;
-            finalWinner = {name: STATE_IDLE, score: 0};
+            // reset pending if confused/weak
+            this.pendingWinner = null;
+            this.pendingCount = 0;
+            winner = this.stableWinner ?? {name: STATE_IDLE, score: 0};
         }
 
         window.dispatchEvent(new CustomEvent('qari-found', {
             detail: {
-                winner: finalWinner,
-                others: sorted.slice(0, 3).filter(m => m.score > 0.05)
+                winner,
+                others: matches.slice(0, 3).filter(m => m.score > 0.05)
             }
         }));
     }
