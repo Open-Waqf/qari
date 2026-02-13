@@ -1,0 +1,14 @@
+# The Core Logic
+tensorflow==2.15.0
+keras==2.15.0
+tf-keras==2.15.0
+numpy==1.26.4
+librosa==0.10.1
+
+# The Converter (Pinned to compatible version)
+tensorflowjs==4.17.0
+
+# Helpers
+packaging
+six
+typing-extensions

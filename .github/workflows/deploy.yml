@@ -1,0 +1,75 @@
+name: Deploy Open Waqf Qari
+
+on:
+  push:
+    branches:
+      - develop
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+      - 'docs/**'
+      - '**/test-images/**'
+      - '*.py'
+      - '*.txt'
+      - '*.mp3'
+      - '*.wav'
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CI: true
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      # 1. Setup Node
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      # 2. Build First (Required for E2E Tests)
+      - name: Build Project
+        run: npm run build
+
+      # 3. Unit Tests (Fast Fail)
+      - name: Run Unit Tests
+        run: npm run test:unit
+
+      # 4. E2E Tests (Needs the Build artifact)
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Run Safety Tests (E2E)
+        run: npx playwright test
+
+      # 5. Deployment Prep
+      - name: Copy CNAME
+        run: echo "qari.open-waqf.org" > dist/CNAME
+
+      # (Optional) Upload Report if tests fail
+      - name: Upload Playwright Report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 30
+
+      - name: Deploy to Deploy Branch
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: app/dist
+          branch: deploy
+          clean: true
+          git-config-name: "Open Waqf Bot"
+          git-config-email: "bot@open-waqf.org"
+          commit-message: "deploy: update Qari (automated)"

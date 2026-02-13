@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://qari.open-waqf.org/sitemap.xml

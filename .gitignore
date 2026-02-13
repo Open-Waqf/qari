@@ -1,0 +1,61 @@
+research/audio/
+research/venv/
+app/node_modules/
+app/dist/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+
+# --- Python & ML Specifics ---
+# The cached dataset (Can be regenerated, do not commit!)
+*.npz
+
+# Intermediate Keras models (Heavy binary files)
+*.h5
+*.keras
+
+# Python compiled bytecode (Standard ignore)
+__pycache__/
+*.py[cod]
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Archive Audio
+research/archive/*.wav
+research/archive/*.mp3
