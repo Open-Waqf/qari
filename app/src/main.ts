@@ -197,6 +197,16 @@ class QariApp {
         this.ui.startBtn.innerText = i18n.t.loading;
         this.ui.startBtn.setAttribute('disabled', 'true');
 
+        if (this.ui.pill) {
+            this.ui.pill.state = 'listening';
+            this.ui.pill.text = i18n.t.analyzing; // "Listening..."
+        }
+        // Reset the meter too
+        if (this.ui.meter) {
+            this.ui.meter.score = 0;
+            this.ui.meter.label = "";
+        }
+
         try {
             // 1. Start Audio (This will now work because it's triggered by a click)
             await audioManager.start((chunk) => {
@@ -209,6 +219,10 @@ class QariApp {
             if (isOnline) {
                 if (this.ui.startBtn.parentElement) this.ui.startBtn.parentElement.style.display = 'none';
                 this.ui.statusDot?.classList.add('online');
+            } else {
+                this.ui.startBtn.innerText = "🚨 Brain Offline (Reload)";
+                this.ui.startBtn.removeAttribute('disabled');
+                this.ui.startBtn.classList.add('error-btn');
             }
         } catch (err: any) {
             console.error("🔥 Engine Start Error:", err);
@@ -296,6 +310,7 @@ class QariApp {
         // Pass dictionary to Web Components
         if (this.ui.meter) this.ui.meter.dict = t;
         if (this.ui.history) this.ui.history.dict = t;
+        if (this.ui.onboard) this.ui.onboard.dict = t;
 
         // Re-trigger the current pill state to update its text
         if (this.ui.pill) {

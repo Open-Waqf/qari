@@ -1,6 +1,8 @@
 /* app/src/index.css */
 
 /* 1. Define Local Fonts */
+
+/* --- English (Inter) --- */
 @font-face {
     font-family: 'Inter';
     src: local('Inter'),
@@ -17,6 +19,23 @@
     font-display: swap;
 }
 
+/* --- Arabic (Cairo) --- */
+@font-face {
+    font-family: 'Cairo';
+    /* Checks for local installation first, then loads your file */
+    src: local('Cairo'), url('/fonts/Cairo-Regular.ttf') format('truetype');
+    font-weight: 400;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Cairo';
+    src: local('Cairo Bold'), url('/fonts/Cairo-Bold.ttf') format('truetype');
+    font-weight: 700;
+    font-display: swap;
+}
+
+/* --- Code (JetBrains) --- */
 @font-face {
     font-family: 'JetBrains Mono';
     src: local('JetBrains Mono'),
@@ -39,18 +58,32 @@
 body {
     margin: 0;
     color: var(--text-main);
-    font-family: 'Inter', 'Segoe UI', 'Tahoma', sans-serif;
+    font-family: 'Inter', 'Cairo', 'Segoe UI', 'Tahoma', sans-serif;
     height: 100vh;
     display: flex;
     justify-content: center;
     align-items: center;
     overflow: hidden; /* Default for desktop */
+
     background-image: linear-gradient(rgba(0, 119, 255, 0.03) 1px, transparent 1px),
     linear-gradient(90deg, rgba(0, 119, 255, 0.03) 1px, transparent 1px);
     background-size: 40px 40px;
     animation: scan 10s linear infinite;
+
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     background-color: #02040a;
+}
+
+/* --- RTL Specific Tweaks --- */
+/* Cairo is naturally a bit smaller than Inter, so we bump it up slightly in Arabic mode */
+[dir="rtl"] body {
+    font-size: 1.05rem;
+}
+
+[dir="rtl"] .title {
+    letter-spacing: 0;
+    line-height: 1.3; /* Arabic needs more height for accents */
+    font-weight: 700; /* Cairo Bold looks great here */
 }
 
 /* --- Language Toggle Bar --- */
@@ -60,13 +93,11 @@ body {
     top: 20px;
     right: 20px;
     z-index: 100;
-    /* This makes them sit side-by-side, centered */
     display: flex;
     align-items: center;
     gap: 12px;
 }
 
-/* FIX: Correct selector for global RTL support */
 [dir="rtl"] .top-bar {
     right: auto;
     left: 20px;
@@ -107,11 +138,6 @@ body {
     letter-spacing: -2px;
     margin: 0;
     text-shadow: 0 0 20px rgba(0, 119, 255, 0.3);
-}
-
-/* Fix RTL spacing for title */
-[dir="rtl"] .title {
-    letter-spacing: 0; /* Arabic letters shouldn't be squished */
 }
 
 .subtitle {
@@ -224,18 +250,16 @@ body {
     box-shadow: 0 0 15px var(--accent-glow);
 }
 
-/* Helper for fade-in animations */
+/* --- Layout Container (Fade In & Safe Areas) --- */
 .fade-in {
     animation: fadeIn 0.5s ease-out;
-
     width: 100%;
     max-width: 420px;
     margin: 0 auto;
 
-    /* VITAL: Add padding so content doesn't touch fixed elements */
-    padding-top: 80px; /* Clear the Top Bar */
-    padding-bottom: 60px; /* Clear the Version Tag */
-    padding-left: 24px; /* Side gutters */
+    padding-top: 80px;
+    padding-bottom: 60px;
+    padding-left: 24px;
     padding-right: 24px;
 
     box-sizing: border-box;
@@ -269,7 +293,7 @@ error-btn {
     border: 1px solid rgba(255, 255, 255, 0.1);
     color: #0077ff;
     border-radius: 12px;
-    width: 44px; /* Finger-tap friendly for mobile */
+    width: 44px;
     height: 44px;
     display: flex;
     align-items: center;
@@ -285,25 +309,22 @@ error-btn {
     transform: rotate(180deg);
 }
 
-/* Use a cleaner SVG icon instead of the 🔄 emoji */
 .recalibrate-svg {
     width: 24px;
     height: 24px;
-    fill: none; /* No background fill */
-    stroke: currentColor; /* Uses the text color (#0077ff) */
-    stroke-width: 2; /* Thickness of the lines */
-    stroke-linecap: round; /* Rounded line ends */
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
     stroke-linejoin: round;
 }
 
 @media (max-height: 750px) {
-    /* Increased threshold slightly */
     body {
-        align-items: flex-start; /* Start from top, not center */
+        align-items: flex-start;
         height: auto;
         min-height: 100vh;
-        overflow-y: auto; /* Allow scrolling */
-        /* Remove body padding here since .fade-in handles it now */
+        overflow-y: auto;
         padding-top: 0;
     }
 }
@@ -315,18 +336,18 @@ error-btn {
     right: 0;
     text-align: center;
     font-size: 0.7rem;
-    color: rgba(255, 255, 255, 0.2); /* Very subtle */
-    pointer-events: none; /* Don't block clicks */
+    color: rgba(255, 255, 255, 0.2);
+    pointer-events: none;
     font-family: 'JetBrains Mono', monospace;
     z-index: 50;
     padding-bottom: env(safe-area-inset-bottom);
 }
 
 .card {
-    width: 90%; /* Responsive width for mobile */
+    width: 90%;
     max-width: 340px;
     padding: 24px;
-    border-radius: 28px; /* Softer, modern corners */
+    border-radius: 28px;
 }
 
 .calibration-loader {

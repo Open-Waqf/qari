@@ -1,3 +1,4 @@
+// app/src/core/i18n.ts
 export type Lang = 'en' | 'ar';
 
 export const translations = {
@@ -18,6 +19,16 @@ export const translations = {
         tooQuiet: "Too Quiet - Move Closer",
         confirmed: "High Confidence",
         unknown: "Unsure - Keep Listening",
+
+        // --- Onboarding Modal ---
+        welcomeTitle: "Welcome to Qari Finder",
+        welcomeDesc: "Identify reciters instantly and privately.",
+        getStarted: "Get Started",
+        calibTitle: "Calibrating Ears",
+        calibDesc: "We are adjusting to your room's noise levels. Please stay silent...",
+        scienceTitle: "Science of Sound",
+        scienceDesc: "Local neural networks analyze frequency patterns without recording audio.",
+        back: "Back"
     },
     ar: {
         appTitle: "قارئ",
@@ -36,6 +47,16 @@ export const translations = {
         tooQuiet: "الصوت منخفض - اقترب",
         confirmed: "تطابق قوي",
         unknown: "غير مؤكد - استمر في القراءة",
+
+        // --- Onboarding Modal (Translated) ---
+        welcomeTitle: "مرحباً بك في قارئ فايندر",
+        welcomeDesc: "تعرف على القراء فورياً وبخصوصية تامة.",
+        getStarted: "ابدأ الآن",
+        calibTitle: "ضبط مستوى السمع",
+        calibDesc: "نقوم بضبط حساسية الميكروفون حسب ضجيج الغرفة. يرجى التزام الصمت...",
+        scienceTitle: "كيف يعمل النظام؟",
+        scienceDesc: "تقوم الشبكات العصبية المحلية بتحليل أنماط الترددات دون الحاجة لتسجيل الصوت.",
+        back: "رجوع"
     }
 };
 
@@ -50,12 +71,9 @@ class I18nManager {
 
     apply() {
         const isAr = this.currentLang === 'ar';
-
-        // 1. Set Direction
         document.documentElement.lang = this.currentLang;
         document.documentElement.dir = isAr ? 'rtl' : 'ltr';
 
-        // 2. Dispatch Event for Components
         window.dispatchEvent(new CustomEvent('lang-change', {
             detail: {lang: this.currentLang, t: translations[this.currentLang]}
         }));

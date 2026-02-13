@@ -1,13 +1,16 @@
 import {css, html, LitElement} from 'lit';
 import {customElement, property} from 'lit/decorators.js';
-import {audioManager} from "../../core/audio-manager.ts"; // Removed .ts if using bundler, but keeping per your setup
+import {audioManager} from "../../core/audio-manager.ts";
 import {inferenceEngine} from "../../model/inference-engine.ts";
+import {i18n} from "../../core/i18n.ts"; // Import default translations
 
 @customElement('onboarding-modal')
 export class OnboardingModal extends LitElement {
     @property({type: Boolean}) open = true;
     @property({type: Boolean}) showDetails = false;
     @property({type: Boolean}) isCalibrating = false;
+
+    @property({type: Object}) dict = i18n.t;
 
     static styles = css`
         :host {
@@ -43,7 +46,6 @@ export class OnboardingModal extends LitElement {
 
             width: 100%;
             max-width: 340px;
-
             text-align: center;
             box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
         }
@@ -113,7 +115,7 @@ export class OnboardingModal extends LitElement {
             cursor: pointer;
             text-decoration: underline;
         }
-        
+
         .calibration-loader {
             width: 40px;
             height: 40px;
@@ -144,7 +146,6 @@ export class OnboardingModal extends LitElement {
         this.style.opacity = '1';
         this.open = true;
         this.isCalibrating = true;
-
         const samples: number[] = [];
 
         return new Promise((resolve) => {
@@ -154,17 +155,17 @@ export class OnboardingModal extends LitElement {
                 samples.push(Math.sqrt(sum / chunk.length));
             };
 
+            // This triggers audio-manager.ts start()
+            // If it fails, the error will be caught in main.ts
             audioManager.start(checkNoise);
 
             setTimeout(() => {
                 audioManager.stop();
                 const peakNoise = Math.max(...samples);
                 const safeThreshold = peakNoise * 1.5;
-
                 inferenceEngine.setThreshold(safeThreshold);
-
                 this.isCalibrating = false;
-                this.hidden = true; // Hide it again when done
+                this.hidden = true;
                 resolve(safeThreshold);
             }, 2000);
         });
@@ -175,16 +176,16 @@ export class OnboardingModal extends LitElement {
             <div class="card">
                 ${this.isCalibrating ? html`
                     <div class="calibration-loader"></div>
-                    <h2>Calibrating Ears</h2>
-                    <p>We are adjusting to your room's noise levels. Please stay silent...</p>
+                    <h2>${this.dict.calibTitle}</h2>
+                    <p>${this.dict.calibDesc}</p>
                 ` : this.showDetails ? html`
-                    <h2>Science of Sound</h2>
-                    <p>Local neural networks analyze frequency patterns without recording audio.</p>
-                    <button class="sub-btn" @click="${() => this.showDetails = false}">Back</button>
+                    <h2>${this.dict.scienceTitle}</h2>
+                    <p>${this.dict.scienceDesc}</p>
+                    <button class="sub-btn" @click="${() => this.showDetails = false}">${this.dict.back}</button>
                 ` : html`
-                    <h2>Welcome to Qari Finder</h2>
-                    <p>Identify reciters instantly and privately.</p>
-                    <button class="btn" @click="${this._handleStart}">Get Started</button>
+                    <h2>${this.dict.welcomeTitle}</h2>
+                    <p>${this.dict.welcomeDesc}</p>
+                    <button class="btn" @click="${this._handleStart}">${this.dict.getStarted}</button>
                 `}
             </div>
         `;
