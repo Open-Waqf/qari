@@ -4,11 +4,16 @@ import './components/ui/glass-card';
 import './components/ui/match-history';
 import './components/ui/onboarding-modal';
 import './components/ui/status-pill';
+import {installFileTestHotkey} from "./debug/file-test";
 
 import {audioManager} from './core/audio-manager';
 import {inferenceEngine, STATE_IDLE} from './model/inference-engine';
 import {i18n} from './core/i18n';
 import {platform} from "./core/platform-service";
+import {micCap} from './audio/mic-cap';
+import {installMicCapHotkey} from "./debug/miccap-hotkey.ts";
+import {installFileLoopbackHotkey} from "./debug/file-loopback.ts";
+import {installRawMicRecordHotkey} from "./debug/raw-mic-record.ts";
 
 class QariApp {
     private ui: any;
@@ -129,6 +134,46 @@ class QariApp {
         });
 
         window.addEventListener('app-state-change', (e: any) => this.handleAppState(e.detail.isActive));
+
+        window.addEventListener('keydown', async (e) => {
+
+            if (e.key.toLowerCase() === 'n' && e.shiftKey) {
+                inferenceEngine.toggleRmsNormalize();
+                const isRmsNormalizeEnabled = inferenceEngine.isRmsNormalizeEnabled();
+                this.ui.pill.text = isRmsNormalizeEnabled ? "RmsNormalize: ON" : "RmsNormalize: OFF";
+            }
+
+            if (e.key.toLowerCase() === 'e' && e.shiftKey) {
+                inferenceEngine.togglePreEmphasis();
+                const isPreEmphasisEnabled = inferenceEngine.isPreEmphasisEnabled();
+                this.ui.pill.text = isPreEmphasisEnabled ? "PreEmphasis: ON" : "PreEmphasis: OFF";
+            }
+
+            if (e.key.toLowerCase() === 'c' && e.shiftKey) {
+                inferenceEngine.toggleCMVN();
+                const isCmvnEnabled = inferenceEngine.isCmvnEnabled();
+                this.ui.pill.text = isCmvnEnabled ? "CMNV: ON" : "CMNV: OFF";
+            }
+
+            if (e.key.toLowerCase() === 'f' && e.shiftKey) {
+                const isNowOn = !audioManager.isFarFieldMode();
+                audioManager.setFarFieldMode(isNowOn);
+
+                // UX Feedback
+                if (this.ui.pill) {
+                    this.ui.pill.state = 'stabilizing'; // Just to show color change
+                    this.ui.pill.text = isNowOn ? "AGC: ON" : "AGC: OFF";
+                }
+
+                // Restart Engine if running
+                if (audioManager.isRunning) {
+                    console.log("🔄 Rebooting audio for Far-Field change...");
+                    await audioManager.stop();
+                    // Slight delay to ensure clean hardware release
+                    setTimeout(() => this.startEngine(), 200);
+                }
+            }
+        });
     }
 
     private handleAppState(isActive: boolean) {
@@ -151,10 +196,10 @@ class QariApp {
         this.ui.startBtn.setAttribute('disabled', 'true');
         this.ui.startBtn.classList.remove('error-btn');
 
+        inferenceEngine.reset();
         this.resetScanState();
 
         try {
-            await audioManager.start((chunk) => inferenceEngine.handleIncomingAudio(chunk));
             const isOnline = await inferenceEngine.setup();
 
             if (isOnline) {
@@ -162,6 +207,14 @@ class QariApp {
             } else {
                 throw new Error("Model Failed");
             }
+
+            await audioManager.start((chunk) => {
+                if (chunk.length !== 4096) console.warn("Unexpected chunk size:", chunk.length);
+                console.log("🎯 post-worklet chunk", chunk.length, "samples (expect 4096 @16k)");
+                inferenceEngine.handleIncomingAudio(chunk);
+                micCap.onChunk(chunk);
+            });
+
         } catch (err: any) {
             let msg = "Error";
             if (err.message.includes("Permission") || err.name === "NotAllowedError") msg = i18n.t.micDenied;
@@ -282,3 +335,9 @@ class QariApp {
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
 if (appRoot) new QariApp(appRoot);
+if (location.search.includes("debug=1")) {
+    installFileTestHotkey();       // Shift+T
+    installMicCapHotkey();         // Shift+M
+    installFileLoopbackHotkey();   // Shift+L
+    installRawMicRecordHotkey();   // Shift+R
+}

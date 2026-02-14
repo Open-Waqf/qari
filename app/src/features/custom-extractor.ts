@@ -22,47 +22,47 @@ export class CustomAudioExtractor {
     }
 
     // Process a full 3-second clip (48000 samples) -> Image (40, 186)
-    extractFullClip(signal: Float32Array): tf.Tensor {
+    extractFullClip(signal: Float32Array, opts?: { cmvn?: boolean }): tf.Tensor {
         if (!this.isReady) throw new Error("Audio Config not loaded");
+
+        const cmvn = !!opts?.cmvn;
 
         return tf.tidy(() => {
             const frameSize = 512;
             const hopSize = 256;
             const framesCount = Math.floor((signal.length - frameSize) / hopSize) + 1;
 
-            // 1. Manually create the 2D Tensor (Flatten first to please TS)
             const flatBuffer = new Float32Array(framesCount * frameSize);
             for (let i = 0; i < framesCount; i++) {
                 const start = i * hopSize;
                 flatBuffer.set(signal.subarray(start, start + frameSize), i * frameSize);
             }
 
-            // Shape: [Frames, 512]
             const signalTensor = tf.tensor2d(flatBuffer, [framesCount, frameSize]);
-
-            // 2. Apply Window
             const windowed = tf.mul(signalTensor, this.window!);
-
-            // 3. FFT (Matrix Mult) - Transpose needed: [512, Frames]
             const windowedT = windowed.transpose();
 
-            // [257, 512] @ [512, Frames] = [257, Frames]
             const realPart = tf.matMul(this.dftReal!, windowedT);
             const imagPart = tf.matMul(this.dftImag!, windowedT);
-
             const mag = tf.sqrt(tf.add(tf.square(realPart), tf.square(imagPart)));
 
-            // 4. Mel [40, 257] @ [257, Frames] = [40, Frames]
             const melEnergies = tf.matMul(this.melBasis!, mag);
             const logMel = tf.log(tf.add(melEnergies, 1e-6));
 
-            // 5. DCT [40, 40] @ [40, Frames] = [40, Frames]
-            const mfcc = tf.matMul(this.dctMatrix!, logMel);
+            let mfcc = tf.matMul(this.dctMatrix!, logMel); // [40, Frames]
 
-            // 6. Final Shape: [Height(40), Width(Time), 1]
-            return mfcc.expandDims(-1);
+            // ✅ CMVN per coefficient across time (axis=1)
+            if (cmvn) {
+                const mean = tf.mean(mfcc, 1, true);
+                const var_ = tf.mean(tf.square(mfcc.sub(mean)), 1, true);
+                const std = tf.sqrt(var_.add(1e-6));
+                mfcc = mfcc.sub(mean).div(std);
+            }
+
+            return mfcc.expandDims(-1); // [40, Frames, 1]
         });
     }
+
 }
 
 export const customExtractor = new CustomAudioExtractor();

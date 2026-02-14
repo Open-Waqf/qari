@@ -1,5 +1,5 @@
 import {audioManager} from '../core/audio-manager';
-import {customExtractor} from './custom-extractor';
+import {customExtractor} from '../features/custom-extractor';
 
 export async function checkAudioParity(audioUrl: string) {
     const context = audioManager.context;

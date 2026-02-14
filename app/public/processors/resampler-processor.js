@@ -1,58 +1,145 @@
 class ResamplerProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
-        this.TARGET_SAMPLE_RATE = 16000;
-        this.buffer = [];
 
-        // 1. FIR Filter for 48k -> 16k (Factor 3)
-        // Raw coefficients (Sum ~= 0.86)
-        const rawCoeffs = [
-            0.0037, -0.0107, -0.0069, 0.0736, 0.2227,
-            0.2952,
-            0.2227, 0.0736, -0.0069, -0.0107, 0.0037
-        ];
+        this.TARGET = 16000;
 
-        // FIX: Normalize to ensure Gain = 1.0 (prevents volume drop)
-        const sum = rawCoeffs.reduce((a, b) => a + b, 0);
-        this.coefficients = rawCoeffs.map(c => c / sum);
-        this.filterLen = this.coefficients.length;
+        // Output buffer
+        this.out = new Float32Array(16384);
+        this.outLen = 0;
 
-        // Buffer for FIR path
-        this.inputBuffer = new Float32Array(2048);
-        this.inputBufferLen = 0;
+        // For 48k -> 16k (decimate by 3)
+        this.DECIM = 3;
+        this.TAPS = 63;               // odd number
+        this.CUTOFF_HZ = 7300;        // keep under 8k Nyquist of 16k
 
-        // 2. State for Fallback Path (Biquad + Linear)
-        this.remainder = 0;
-        this.lastSample = 0; // Bridges gap between chunks
-        this.lp = null;      // Lazy init
-        this.lp2 = null;
+        this.h = null;                // FIR coeffs (built when we know fs)
+        this.hist = new Float32Array(this.TAPS);
+        this.histPos = 0;
+        this.filled = 0;
+        this.sampleCounter = 0;
+
+        // Fallback resample state (for fs != 48k)
+        this.frac = 0;
+        this.prev = 0;
+
+        this.didLog = false;
     }
 
-    // --- Biquad Filter Helper (Lowpass) ---
-    makeLowpass(fs, cutoffHz = 7200, Q = 0.707) {
-        const w0 = 2 * Math.PI * (cutoffHz / fs);
-        const cosw0 = Math.cos(w0);
-        const sinw0 = Math.sin(w0);
-        const alpha = sinw0 / (2 * Q);
+    buildFIR(fs) {
+        // Windowed-sinc lowpass (Blackman), DC-normalized
+        const taps = this.TAPS;
+        const M = taps - 1;
+        const fc = this.CUTOFF_HZ / fs; // cycles/sample
 
-        const a0 = 1 + alpha;
-        return {
-            b0: ((1 - cosw0) / 2) / a0,
-            b1: (1 - cosw0) / a0,
-            b2: ((1 - cosw0) / 2) / a0,
-            a1: (-2 * cosw0) / a0,
-            a2: (1 - alpha) / a0,
-            x1: 0, x2: 0, y1: 0, y2: 0
-        };
+        const h = new Float32Array(taps);
+        let sum = 0;
+
+        for (let i = 0; i < taps; i++) {
+            const n = i - M / 2;
+
+            let sinc;
+            if (n === 0) {
+                sinc = 2 * fc;
+            } else {
+                sinc = Math.sin(2 * Math.PI * fc * n) / (Math.PI * n);
+            }
+
+            // Blackman window
+            const w =
+                0.42 -
+                0.5 * Math.cos((2 * Math.PI * i) / M) +
+                0.08 * Math.cos((4 * Math.PI * i) / M);
+
+            const v = sinc * w;
+            h[i] = v;
+            sum += v;
+        }
+
+        // Normalize DC gain to 1.0
+        for (let i = 0; i < taps; i++) h[i] /= sum;
+
+        return h;
     }
 
-    biquadStep(st, x) {
-        const y = st.b0 * x + st.b1 * st.x1 + st.b2 * st.x2 - st.a1 * st.y1 - st.a2 * st.y2;
-        st.x2 = st.x1;
-        st.x1 = x;
-        st.y2 = st.y1;
-        st.y1 = y;
-        return y;
+    pushOut(sample) {
+        // Expand out buffer if needed (rare)
+        if (this.outLen >= this.out.length) {
+            const bigger = new Float32Array(this.out.length * 2);
+            bigger.set(this.out);
+            this.out = bigger;
+        }
+        this.out[this.outLen++] = sample;
+    }
+
+    flush4096() {
+        while (this.outLen >= 4096) {
+            const chunk = this.out.slice(0, 4096); // copy
+            this.port.postMessage(chunk);
+
+            // shift remaining
+            this.out.copyWithin(0, 4096, this.outLen);
+            this.outLen -= 4096;
+        }
+    }
+
+    firDecimateBy3(inCh) {
+        // Build FIR once (needs fs)
+        if (!this.h) this.h = this.buildFIR(sampleRate);
+
+        for (let i = 0; i < inCh.length; i++) {
+            const x = inCh[i];
+
+            // write into circular history buffer
+            this.hist[this.histPos] = x;
+            this.histPos = (this.histPos + 1) % this.TAPS;
+
+            if (this.filled < this.TAPS) {
+                this.filled++;
+                this.sampleCounter++;
+                continue;
+            }
+
+            this.sampleCounter++;
+
+            // output every 3 input samples
+            if (this.sampleCounter % this.DECIM !== 0) continue;
+
+            // convolution: newest sample is at histPos-1 (wrapped)
+            let y = 0;
+            let idx = this.histPos;
+
+            for (let k = 0; k < this.TAPS; k++) {
+                idx = (idx - 1 + this.TAPS) % this.TAPS;
+                y += this.hist[idx] * this.h[k];
+            }
+
+            this.pushOut(y);
+        }
+    }
+
+    // Minimal fallback (neutral, no lowpass “muffle”)
+    linearResample(inCh, ratio) {
+        // ratio = fs / 16000
+        if (inCh.length === 0) return;
+
+        let t = this.frac;
+
+        while (t < inCh.length - 1) {
+            const i0 = Math.floor(t);
+            const a = t - i0;
+
+            const s0 = (i0 < 0) ? this.prev : inCh[i0];
+            const s1 = inCh[i0 + 1];
+
+            const y = s0 + (s1 - s0) * a;
+            this.pushOut(y);
+
+            t += ratio;
+        }
+
+        this.frac = t - inCh.length;
+        this.prev = inCh[inCh.length - 1];
     }
 
     process(inputs) {
@@ -62,108 +149,24 @@ class ResamplerProcessor extends AudioWorkletProcessor {
         const inCh = input[0];
         const fs = sampleRate;
 
-        // Path A: Optimized 48kHz (Native Android/Most PC)
+        if (!this.didLog) {
+            this.didLog = true;
+            console.log(`🎛️ Worklet fs=${fs}Hz (target 16k)`);
+        }
+
+        // Best path: 48k -> 16k via FIR decimation-by-3
         if (fs === 48000) {
             this.firDecimateBy3(inCh);
-            this.flushBuffer();
+            this.flush4096();
             return true;
         }
 
-        // Path B: Universal Fallback (44.1kHz, etc.)
-
-        // 1. Initialize Filters if needed
-        if (!this.lp) {
-            this.lp = this.makeLowpass(fs, 7200);
-            this.lp2 = this.makeLowpass(fs, 7200);
-        }
-
-        // 2. Filter In-Place
-        const filtered = new Float32Array(inCh.length);
-        for (let i = 0; i < inCh.length; i++) {
-            let x = inCh[i];
-            x = this.biquadStep(this.lp, x);
-            x = this.biquadStep(this.lp2, x);
-            filtered[i] = x;
-        }
-
-        // 3. Robust Linear Resampling
-        this.linearResample(filtered, fs / this.TARGET_SAMPLE_RATE);
-        this.flushBuffer();
+        // Fallback: linear ratio resample (neutral)
+        const ratio = fs / this.TARGET;
+        this.linearResample(inCh, ratio);
+        this.flush4096();
         return true;
-    }
-
-    firDecimateBy3(inputChannel) {
-        // Append new data
-        const totalLen = this.inputBufferLen + inputChannel.length;
-        if (totalLen > this.inputBuffer.length) {
-            const newBuf = new Float32Array(totalLen + 1024);
-            newBuf.set(this.inputBuffer.subarray(0, this.inputBufferLen));
-            this.inputBuffer = newBuf;
-        }
-        this.inputBuffer.set(inputChannel, this.inputBufferLen);
-        this.inputBufferLen += inputChannel.length;
-
-        // Decimate
-        const ratio = 3;
-        const outputLen = Math.floor((this.inputBufferLen - this.filterLen) / ratio);
-
-        for (let i = 0; i < outputLen; i++) {
-            const offset = i * ratio;
-            let sum = 0;
-            for (let k = 0; k < this.filterLen; k++) {
-                sum += this.inputBuffer[offset + k] * this.coefficients[k];
-            }
-            this.buffer.push(sum);
-        }
-
-        // Shift buffer
-        const consumed = outputLen * ratio;
-        this.inputBuffer.set(this.inputBuffer.subarray(consumed, this.inputBufferLen));
-        this.inputBufferLen -= consumed;
-    }
-
-    linearResample(input, ratio) {
-        // Guard: Tiny buffers can cause OOB errors
-        if (input.length < 2) {
-            if (input.length > 0) this.lastSample = input[input.length - 1];
-            return;
-        }
-
-        let inputIdx = this.remainder;
-
-        // Loop until we need a sample from the NEXT chunk
-        while (inputIdx < input.length - 1) {
-            const prevIdx = Math.floor(inputIdx);
-            const fraction = inputIdx - prevIdx;
-
-            // Bridge logic:
-            // If prevIdx is -1, we interpolate between 'lastSample' (prev chunk) and input[0].
-            const p0 = (prevIdx < 0) ? this.lastSample : input[prevIdx];
-
-            // Simplified p1: since inputIdx < input.length - 1,
-            // prevIdx + 1 is always valid within this chunk (>= 0 and < length).
-            const p1 = input[prevIdx + 1];
-
-            const sample = p0 + (p1 - p0) * fraction;
-            this.buffer.push(sample);
-
-            inputIdx += ratio;
-        }
-
-        // Store negative remainder relative to the END of this chunk.
-        this.remainder = inputIdx - input.length;
-
-        // Save the very last FILTERED sample to use as p0 for the next chunk
-        this.lastSample = input[input.length - 1];
-    }
-
-    flushBuffer() {
-        while (this.buffer.length >= 4096) {
-            const chunk = new Float32Array(this.buffer.slice(0, 4096));
-            this.port.postMessage(chunk);
-            this.buffer = this.buffer.slice(4096);
-        }
     }
 }
 
-registerProcessor('resampler-processor', ResamplerProcessor);
+registerProcessor("resampler-processor", ResamplerProcessor);

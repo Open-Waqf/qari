@@ -5,7 +5,7 @@ import {RingBuffer} from './ring-buffer';
 // CONSTANT for System ID
 export const STATE_IDLE = "Analyzing...";
 
-export class InferenceEngine {
+class InferenceEngine {
     private static instance: InferenceEngine;
 
     private model: tf.LayersModel | null = null;
@@ -36,13 +36,119 @@ export class InferenceEngine {
     private snrOff = 1.4;   // stay voiced while rms >= noiseFloor*snrOff
     private isVoiced = false;
     private voicedHang = 0; // hangover chunks to bridge gaps
-    private readonly VOICED_HANG_MAX = 10; // ~10 chunks
+    private readonly VOICED_HANG_MAX = 15; // ~10 chunks
 
     // Stability state
     private pendingWinner: string | null = null;
     private pendingCount = 0;
     private stableWinner: { name: string; score: number } | null = null;
     private REQUIRED_STABILITY = 2;
+
+    private dbgWritten = 0;
+    private dbgSkipped = 0;
+    private dbgLastDbgTime = 0;
+
+    private dbgTopLogLast = 0;
+    private dbgTopLogEveryMs = 1000;
+
+    private cmvnEnabled = false;
+
+    private preEmphasisEnabled = false;     // start OFF
+    private preEmphasisA = 0.97;
+
+    private rmsNormalizeEnabled = true;  // start ON for mic robustness
+    private targetRms = 0.10;           // DO NOT chase 0.40; your loopback succeeds at ~0.10
+    private minGain = 0.25;
+    private maxGain = 6.0;
+
+    private applyRmsNormalize(chunk: Float32Array, rms: number): Float32Array {
+        // Guard
+        if (rms < 1e-8) return chunk;
+
+        let g = this.targetRms / rms;
+        if (g < this.minGain) g = this.minGain;
+        if (g > this.maxGain) g = this.maxGain;
+
+        // Apply gain + hard limiter
+        const out = new Float32Array(chunk.length);
+        for (let i = 0; i < chunk.length; i++) {
+            let y = chunk[i] * g;
+            if (y > 1) y = 1;
+            else if (y < -1) y = -1;
+            out[i] = y;
+        }
+        return out;
+    }
+
+    public isRmsNormalizeEnabled(): boolean {
+        return this.rmsNormalizeEnabled;
+    }
+
+    toggleRmsNormalize() {
+        this.rmsNormalizeEnabled = !this.rmsNormalizeEnabled;
+        console.log(`🧪 RMS Normalize: ${this.rmsNormalizeEnabled ? "ON" : "OFF"}`);
+    }
+
+    public isPreEmphasisEnabled(): boolean {
+        return this.preEmphasisEnabled;
+    }
+
+    private rms(x: Float32Array) {
+        let sum = 0;
+        for (let i = 0; i < x.length; i++) sum += x[i] * x[i];
+        return Math.sqrt(sum / Math.max(1, x.length));
+    }
+
+    /**
+     * Normalize window loudness to target RMS (linear gain only).
+     * - caps gain so we don't explode noise
+     * - clamps output to [-1, 1] (safe for model + WAV debug)
+     */
+    private normalizeRms(
+        x: Float32Array,
+        targetRms = 0.10,
+        minGain = 0.25,
+        maxGain = 8.0,
+        floor = 0.002
+    ) {
+        const r = this.rms(x);
+        if (r < floor) return {y: x, gain: 1, rms: r};
+
+        let g = targetRms / r;
+        if (g < minGain) g = minGain;
+        if (g > maxGain) g = maxGain;
+
+        if (Math.abs(g - 1) < 1e-3) return {y: x, gain: g, rms: r};
+
+        const y = new Float32Array(x.length);
+        for (let i = 0; i < x.length; i++) {
+            const v = x[i] * g;
+            y[i] = v > 1 ? 1 : (v < -1 ? -1 : v);
+        }
+        return {y, gain: g, rms: r};
+    }
+
+    togglePreEmphasis() {
+        this.preEmphasisEnabled = !this.preEmphasisEnabled;
+        console.log(`🧪 PreEmphasis: ${this.preEmphasisEnabled ? "ON" : "OFF"}`);
+    }
+
+    private preEmphasis(x: Float32Array, a = this.preEmphasisA) {
+        const y = new Float32Array(x.length);
+        if (x.length === 0) return y;
+        y[0] = x[0];
+        for (let i = 1; i < x.length; i++) y[i] = x[i] - a * x[i - 1];
+        return y;
+    }
+
+    public isCmvnEnabled(): boolean {
+        return this.cmvnEnabled;
+    }
+
+    toggleCMVN() {
+        this.cmvnEnabled = !this.cmvnEnabled;
+        console.log(`🧪 CMVN: ${this.cmvnEnabled ? "ON" : "OFF"}`);
+    }
 
     private constructor() {
         this.buffer = new RingBuffer(3, 16000);
@@ -140,6 +246,7 @@ export class InferenceEngine {
                     this.dispatchSilence();
                     this.resetState();
                 }
+                this.dbgSkipped++;
                 return;
             }
             // Enter voiced state
@@ -152,8 +259,9 @@ export class InferenceEngine {
                 if (this.voicedHang <= 0) {
                     this.isVoiced = false;
                     this.silenceCounter++;
-                    return;
                 }
+                this.dbgSkipped++;
+                return;
             } else {
                 // Refresh hang window
                 this.voicedHang = this.VOICED_HANG_MAX;
@@ -162,7 +270,11 @@ export class InferenceEngine {
 
         // If we got here, we accept this chunk
         this.silenceCounter = 0;
-        this.buffer.write(chunk);
+        this.dbgWritten++;
+        const chunkForBuffer =
+            this.rmsNormalizeEnabled ? this.applyRmsNormalize(chunk, rms) : chunk;
+
+        this.buffer.write(chunkForBuffer);
 
         // Fire inference at most every 500ms and never overlap
         if (this.buffer.isFull && !this.isPredicting) {
@@ -170,6 +282,12 @@ export class InferenceEngine {
                 this.lastPredictionTime = now;
                 this.predict();
             }
+        }
+        if (now - this.dbgLastDbgTime > 1000) {
+            console.log(`🧪 buffer writes/sec=${this.dbgWritten} skipped/sec=${this.dbgSkipped}`);
+            this.dbgWritten = 0;
+            this.dbgSkipped = 0;
+            this.dbgLastDbgTime = now;
         }
     }
 
@@ -237,6 +355,20 @@ export class InferenceEngine {
         return raw ? raw.replace(/_/g, ' ').toUpperCase() : "UNKNOWN";
     }
 
+    public reset() {
+        this.resetState();
+        // 2. Force the UI to go back to "Idle/Listening" immediately
+        // This stops the Ring from showing the old Reciter for a split second on restart
+        window.dispatchEvent(new CustomEvent('qari-found', {
+            detail: {
+                winner: {name: STATE_IDLE, score: 0},
+                others: []
+            }
+        }));
+
+        console.log("🧹 Inference Engine State Reset");
+    }
+
     /**
      * Normalized entropy in [0..1], robust across different class counts.
      */
@@ -259,17 +391,27 @@ export class InferenceEngine {
             // Yield so UI/visualizer can paint before heavy work
             await new Promise<void>(r => requestAnimationFrame(() => r()));
 
-            const signal = this.buffer.read();
+            let signal = this.buffer.read();
+            if (this.isRmsNormalizeEnabled()) {
+                const n = this.normalizeRms(signal);
+                signal = n.y;
+                console.log(`🎚️ RMSNorm gain=${n.gain.toFixed(2)} rms=${n.rms.toFixed(4)}`);
+            }
+            const featSignal = this.preEmphasisEnabled ? this.preEmphasis(signal) : signal;
 
             const prediction = tf.tidy(() => {
-                const input = customExtractor.extractFullClip(signal);
+                const input = customExtractor.extractFullClip(featSignal, {cmvn: this.cmvnEnabled});
                 const batch = input.expandDims(0);
 
+                if (this.cmvnEnabled) {
+                    // CMVN already normalized per-clip
+                    return this.model!.predict(batch) as tf.Tensor;
+                }
+
+                // Original global normalization path
                 const mean = this.normalization.mean ?? -0.77;
                 const std = this.normalization.std ?? 5.20;
-
-                const normalized = batch.sub(mean).div(std);
-                return this.model!.predict(normalized) as tf.Tensor;
+                return this.model!.predict(batch.sub(mean).div(std)) as tf.Tensor;
             });
 
             const probs = Array.from(await prediction.data());
@@ -290,6 +432,19 @@ export class InferenceEngine {
 
             // Top matches
             const topMatches = this.getTop3(avg);
+            const nowTop = Date.now();
+            if (nowTop - this.dbgTopLogLast > this.dbgTopLogEveryMs) {
+                this.dbgTopLogLast = nowTop;
+
+                const fmt = (m?: { name: string; score: number }) =>
+                    m ? `${m.name}:${(m.score * 100).toFixed(1)}%` : "-";
+
+                console.log(
+                    `🏆 TOP3 | ent=${ent.toFixed(3)} | ` +
+                    `${fmt(topMatches[0])} | ${fmt(topMatches[1])} | ${fmt(topMatches[2])}`
+                );
+            }
+
             const top1 = topMatches[0] || {name: STATE_IDLE, score: 0};
             const top2 = topMatches[1];
 
@@ -348,6 +503,79 @@ export class InferenceEngine {
             this.isPredicting = false;
         }
     }
+
+    public async predictFromSignal(
+        signal16k: Float32Array,
+        opts?: { startSec?: number; windowSec?: number; dispatchToUI?: boolean; log?: boolean }
+    ) {
+        if (!this.model) throw new Error("Model not loaded. Call inferenceEngine.setup() first.");
+
+        const sr = 16000;
+        const windowSec = opts?.windowSec ?? 3;
+        const win = Math.max(1, Math.floor(windowSec * sr));
+
+        // pick window
+        const startSec = Math.max(0, opts?.startSec ?? 0);
+        const start = Math.floor(startSec * sr);
+
+        let windowed = new Float32Array(win);
+        if (signal16k.length >= win) {
+            const sliceStart = Math.min(start, Math.max(0, signal16k.length - win));
+            windowed.set(signal16k.subarray(sliceStart, sliceStart + win));
+        } else {
+            // pad if too short
+            windowed.set(signal16k);
+        }
+
+        if (this.isRmsNormalizeEnabled()) {
+            const n = this.normalizeRms(windowed);
+            windowed = n.y as any;
+            console.log(`🎚️ RMSNorm gain=${n.gain.toFixed(2)} rms=${n.rms.toFixed(4)}`);
+        }
+
+        const featSignal = this.preEmphasisEnabled ? this.preEmphasis(windowed) : windowed;
+
+        const prediction = tf.tidy(() => {
+            const input = customExtractor.extractFullClip(featSignal, {cmvn: this.cmvnEnabled});
+            const batch = input.expandDims(0);
+
+            if (this.cmvnEnabled) {
+                return this.model!.predict(batch) as tf.Tensor;
+            }
+
+            const mean = this.normalization.mean ?? -0.77;
+            const std = this.normalization.std ?? 5.20;
+            return this.model!.predict(batch.sub(mean).div(std)) as tf.Tensor;
+        });
+
+        const probs = Array.from(await prediction.data());
+        prediction.dispose();
+
+        const ent = this.entropyNormalized(probs);
+        const top3 = this.getTop3(probs);
+        const top1 = top3[0] ?? {name: STATE_IDLE, score: 0};
+
+        if (opts?.log) {
+            console.log(
+                `🏁 FILETEST | start=${startSec.toFixed(2)}s ent=${ent.toFixed(3)} | ` +
+                top3.map(x => `${x.name}:${(x.score * 100).toFixed(1)}%`).join(" | ")
+            );
+        }
+
+        if (opts?.dispatchToUI) {
+            window.dispatchEvent(new CustomEvent("qari-found", {
+                detail: {
+                    winner: top1,
+                    others: top3
+                }
+            }));
+        }
+
+        return {top1, top3, ent, probs};
+    }
+
 }
+
+export default InferenceEngine
 
 export const inferenceEngine = InferenceEngine.getInstance();
