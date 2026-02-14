@@ -1,5 +1,4 @@
 import {inferenceEngine} from "../model/inference-engine";
-import {audioManager} from "../core/audio-manager.ts";
 
 async function decodeFileToAudioBuffer(file: File): Promise<AudioBuffer> {
     const arrayBuf = await file.arrayBuffer();
@@ -47,12 +46,7 @@ async function resampleTo16k(mono: Float32Array, inRate: number): Promise<Float3
     return rendered.getChannelData(0).slice();
 }
 
-async function runFileTest(file: File) {
-
-    console.log(`🧪 FILETEST CMVN: ${inferenceEngine.isCmvnEnabled() ? "ON" : "OFF"}`);
-    console.log(`🧪 FILETEST Far Field Mode: ${audioManager.isFarFieldMode() ? "ON" : "OFF"}`);
-    console.log(`🧪 FILETEST PreEmphasis: ${inferenceEngine.isPreEmphasisEnabled() ? "ON" : "OFF"}`);
-    console.log(`🧪 FILETEST RMS Normalized: ${inferenceEngine.isRmsNormalizeEnabled() ? "ON" : "OFF"}`);
+export async function runFileTest(file: File) {
 
     // Ensure model is ready (won't regress your flow; it just loads if needed)
     const ok = await inferenceEngine.setup();
@@ -82,34 +76,4 @@ async function runFileTest(file: File) {
     }
 
     console.log("✅ FILETEST done.");
-}
-
-export function installFileTestHotkey() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "audio/*";
-    input.style.display = "none";
-    document.body.appendChild(input);
-
-    input.addEventListener("change", async () => {
-        const file = input.files?.[0];
-        input.value = "";
-        if (!file) return;
-        try {
-            await runFileTest(file);
-        } catch (e) {
-            console.error("❌ FILETEST error:", e);
-            alert(`FILETEST error: ${(e as any)?.message ?? e}`);
-        }
-    });
-
-    window.addEventListener("keydown", (e) => {
-        // Shift+T
-        if (e.shiftKey && (e.key === "T" || e.key === "t")) {
-            e.preventDefault();
-            input.click();
-        }
-    });
-
-    console.log("🧪 FILETEST hotkey installed: Shift+T");
 }

@@ -29,7 +29,7 @@ function concatChunks(chunks: Float32Array[]): Float32Array {
     return out;
 }
 
-async function runFileLoopback(file: File) {
+export async function runFileLoopback(file: File) {
     console.log(`🧪 FILETEST CMVN: ${inferenceEngine.isCmvnEnabled() ? "ON" : "OFF"}`);
     console.log(`🧪 FILETEST Far Field Mode: ${audioManager.isFarFieldMode() ? "ON" : "OFF"}`);
     console.log(`🧪 FILETEST PreEmphasis: ${inferenceEngine.isPreEmphasisEnabled() ? "ON" : "OFF"}`);
@@ -73,33 +73,4 @@ async function runFileLoopback(file: File) {
 
     await runMicCapTest(sig16k);
     console.log("✅ LOOPBACK done.");
-}
-
-export function installFileLoopbackHotkey() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "audio/*";
-    input.style.display = "none";
-    document.body.appendChild(input);
-
-    input.addEventListener("change", async () => {
-        const file = input.files?.[0];
-        input.value = "";
-        if (!file) return;
-        try {
-            await runFileLoopback(file);
-        } catch (e) {
-            console.error("❌ LOOPBACK error:", e);
-            alert(`LOOPBACK error: ${(e as any)?.message ?? e}`);
-        }
-    });
-
-    window.addEventListener("keydown", (e) => {
-        if (e.shiftKey && (e.key === "L" || e.key === "l")) {
-            e.preventDefault();
-            input.click();
-        }
-    });
-
-    console.log("🧪 LOOPBACK hotkey installed: Shift+L");
 }

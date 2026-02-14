@@ -1,3 +1,5 @@
+import {EVENTS} from "./events.ts";
+
 export type Lang = 'en' | 'ar';
 
 export const translations = {
@@ -115,7 +117,7 @@ class I18nManager {
         document.documentElement.dir = isAr ? 'rtl' : 'ltr';
 
         // Dispatch event for UI components to re-render
-        window.dispatchEvent(new CustomEvent('lang-change', {
+        window.dispatchEvent(new CustomEvent(EVENTS.LANG_CHANGE, {
             detail: {
                 lang: this.currentLang,
                 t: translations[this.currentLang]

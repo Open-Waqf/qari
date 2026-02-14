@@ -1,12 +1,11 @@
-// src/core/platform-service.ts
 import {Capacitor} from '@capacitor/core';
 import {Haptics, ImpactStyle, NotificationType} from '@capacitor/haptics';
 import {App} from '@capacitor/app';
+import {EVENTS} from './events';
 
 export class PlatformService {
     private static instance: PlatformService;
 
-    // Detect environment
     public isNative = Capacitor.isNativePlatform();
     public isAndroid = Capacitor.getPlatform() === 'android';
     public isIOS = Capacitor.getPlatform() === 'ios';
@@ -20,46 +19,33 @@ export class PlatformService {
         return this.instance || (this.instance = new PlatformService());
     }
 
-    /**
-     * Initializes platform-specific listeners (Back button, App State)
-     */
     private initializeListeners() {
         if (this.isNative) {
-            // Handle Android Hardware Back Button
             App.addListener('backButton', ({canGoBack}) => {
-                if (!canGoBack) {
-                    App.exitApp();
-                } else {
-                    window.history.back();
-                }
+                if (!canGoBack) App.exitApp();
+                else window.history.back();
             });
 
-            // Handle App Background/Foreground (Save Battery)
             App.addListener('appStateChange', ({isActive}) => {
-                window.dispatchEvent(new CustomEvent('app-state-change', {
-                    detail: {isActive}
-                }));
+                this.dispatchAppState(isActive);
             });
         } else {
-            // Web Fallback for Visibility
             document.addEventListener('visibilitychange', () => {
-                const isActive = document.visibilityState === 'visible';
-                window.dispatchEvent(new CustomEvent('app-state-change', {
-                    detail: {isActive}
-                }));
+                this.dispatchAppState(document.visibilityState === 'visible');
             });
         }
     }
 
-    /**
-     * Unified Haptic Feedback
-     * Fails silently on Web if not supported
-     */
+    private dispatchAppState(isActive: boolean) {
+        window.dispatchEvent(new CustomEvent(EVENTS.APP_STATE_CHANGE, {
+            detail: {isActive}
+        }));
+    }
+
     async hapticSuccess() {
         try {
-            // FIX 1: Use NotificationType Enum instead of raw number
             await Haptics.notification({type: NotificationType.Success});
-        } catch (e) {
+        } catch {
             if (navigator.vibrate) navigator.vibrate(50);
         }
     }
@@ -67,31 +53,17 @@ export class PlatformService {
     async hapticLight() {
         try {
             await Haptics.impact({style: ImpactStyle.Light});
-        } catch (e) {
+        } catch {
             if (navigator.vibrate) navigator.vibrate(10);
         }
     }
 
     /**
-     * Check and Request Microphone Permissions
+     * Simplified Permission Check.
+     * We trust getUserMedia to prompt the user.
+     * Pre-checking permissions is flaky on web/iOS and deprecated in Capacitor logic.
      */
     async checkMicPermission(): Promise<boolean> {
-        // FIX 2: Remove deprecated Capacitor.Plugins.Permissions
-        // In modern WebViews (Capacitor), getUserMedia triggers the native prompt automatically.
-        // We can optionally check via the standard Web API.
-        if (this.isNative) {
-            try {
-                // Check if the permission API is available in the WebView
-                if (navigator.permissions && navigator.permissions.query) {
-                    // @ts-ignore - 'microphone' is a valid name but TS sometimes misses it in specific envs
-                    const status = await navigator.permissions.query({name: 'microphone'});
-                    return status.state === 'granted' || status.state === 'prompt';
-                }
-            } catch (e) {
-                // Fallback for iOS/older WebViews: assume true and let getUserMedia handle the error
-                return true;
-            }
-        }
         return true;
     }
 }
