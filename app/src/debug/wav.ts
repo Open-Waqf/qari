@@ -1,4 +1,3 @@
-// debug/wav.ts
 export function encodeWav16k(signal16k: Float32Array, sampleRate = 16000): Blob {
     const numChannels = 1;
     const bitsPerSample = 16;

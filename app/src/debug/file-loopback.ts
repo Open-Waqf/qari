@@ -1,7 +1,5 @@
-// debug/file-loopback.ts
 import {runMicCapTest} from "./miccap-test";
 import {inferenceEngine} from "../model/inference-engine";
-import {audioManager} from "../core/audio-manager.ts";
 
 async function decodeToBufferInContext(file: File, ctx: AudioContext): Promise<AudioBuffer> {
     const arrayBuf = await file.arrayBuffer();
@@ -30,10 +28,6 @@ function concatChunks(chunks: Float32Array[]): Float32Array {
 }
 
 export async function runFileLoopback(file: File) {
-    console.log(`🧪 FILETEST CMVN: ${inferenceEngine.isCmvnEnabled() ? "ON" : "OFF"}`);
-    console.log(`🧪 FILETEST Far Field Mode: ${audioManager.isFarFieldMode() ? "ON" : "OFF"}`);
-    console.log(`🧪 FILETEST PreEmphasis: ${inferenceEngine.isPreEmphasisEnabled() ? "ON" : "OFF"}`);
-    console.log(`🧪 FILETEST RMS Normalized: ${inferenceEngine.isRmsNormalizeEnabled() ? "ON" : "OFF"}`);
 
     await inferenceEngine.setup();
 
