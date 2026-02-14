@@ -1,28 +1,22 @@
 /* app/src/index.css */
 
 /* 1. Define Local Fonts */
-
-/* --- English (Inter) --- */
 @font-face {
     font-family: 'Inter';
-    src: local('Inter'),
-    url('/fonts/Inter-Regular.woff2') format('woff2');
+    src: local('Inter'), url('/fonts/Inter-Regular.woff2') format('woff2');
     font-weight: 400;
     font-display: swap;
 }
 
 @font-face {
     font-family: 'Inter';
-    src: local('Inter Bold'),
-    url('/fonts/Inter-Bold.woff2') format('woff2');
+    src: local('Inter Bold'), url('/fonts/Inter-Bold.woff2') format('woff2');
     font-weight: 700;
     font-display: swap;
 }
 
-/* --- Arabic (Cairo) --- */
 @font-face {
     font-family: 'Cairo';
-    /* Checks for local installation first, then loads your file */
     src: local('Cairo'), url('/fonts/Cairo-Regular.ttf') format('truetype');
     font-weight: 400;
     font-display: swap;
@@ -35,11 +29,9 @@
     font-display: swap;
 }
 
-/* --- Code (JetBrains) --- */
 @font-face {
     font-family: 'JetBrains Mono';
-    src: local('JetBrains Mono'),
-    url('/fonts/JetBrainsMono-VariableFont_wght.ttf') format('truetype');
+    src: local('JetBrains Mono'), url('/fonts/JetBrainsMono-VariableFont_wght.ttf') format('truetype');
     font-weight: 400;
     font-display: swap;
 }
@@ -54,238 +46,55 @@
     --text-dim: #8b949e;
 }
 
-/* 3. Base Styles */
+/* 3. Base Reset - ENABLE SCROLLING */
 body {
     margin: 0;
     color: var(--text-main);
-    font-family: 'Inter', 'Cairo', 'Segoe UI', 'Tahoma', sans-serif;
-    height: 100vh;
+    font-family: 'Inter', 'Cairo', sans-serif;
+    background-color: var(--bg-dark);
+    /* FIX: Allow scrolling */
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* --- THE MAIN LAYOUT (Flex Column) --- */
+.app-layout {
     display: flex;
-    justify-content: center;
-    align-items: center;
-    overflow: hidden; /* Default for desktop */
-
-    background-image: linear-gradient(rgba(0, 119, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 119, 255, 0.03) 1px, transparent 1px);
-    background-size: 40px 40px;
-    animation: scan 10s linear infinite;
-
-    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-    background-color: #02040a;
+    flex-direction: column;
+    /* FIX: Min-height ensures it fills screen, but 'height: auto' allows growing */
+    min-height: 100vh;
+    width: 100%;
+    max-width: 600px;
+    margin: 0 auto;
+    position: relative;
+    padding-bottom: 40px; /* Space at bottom for scrolling */
 }
 
-/* --- RTL Specific Tweaks --- */
-/* Cairo is naturally a bit smaller than Inter, so we bump it up slightly in Arabic mode */
-[dir="rtl"] body {
-    font-size: 1.05rem;
+/* --- HEADER --- */
+.app-header {
+    padding: 20px 24px;
+    z-index: 20;
+    text-align: center;
+    flex-shrink: 0; /* Don't shrink header */
 }
 
-[dir="rtl"] .title {
-    letter-spacing: 0;
-    line-height: 1.3; /* Arabic needs more height for accents */
-    font-weight: 700; /* Cairo Bold looks great here */
-}
-
-/* --- Language Toggle Bar --- */
-.top-bar {
-    padding-top: env(safe-area-inset-top);
-    position: absolute;
-    top: 20px;
-    right: 20px;
-    z-index: 100;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-[dir="rtl"] .top-bar {
-    right: auto;
-    left: 20px;
-}
-
-.lang-toggle {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: var(--text-dim);
-    padding: 8px 16px;
-    border-radius: 20px;
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    transition: all 0.2s ease;
-}
-
-.lang-toggle:hover {
-    color: var(--accent);
-    border-color: var(--accent);
-    background: rgba(0, 119, 255, 0.1);
-}
-
-/* --- Animations & Typography --- */
-@keyframes scan {
-    from {
-        background-position: 0 0;
-    }
-    to {
-        background-position: 0 40px;
-    }
-}
-
-.title {
-    font-size: 2.5rem;
-    font-weight: 800;
-    letter-spacing: -2px;
-    margin: 0;
-    text-shadow: 0 0 20px rgba(0, 119, 255, 0.3);
-}
-
-.subtitle {
-    color: var(--text-dim);
-    font-size: 0.9rem;
-    font-weight: 500;
-    margin-top: 5px;
-    margin-bottom: 25px;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-}
-
-.accent {
-    color: var(--accent);
-}
-
-/* --- Component Utils --- */
-.status-header {
+.top-nav {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 20px;
+    margin-bottom: 12px;
+    height: 44px;
 }
 
-.label {
-    font-size: 0.75rem;
-    text-transform: uppercase;
+.text-btn {
+    background: none;
+    border: none;
     color: var(--text-dim);
-    letter-spacing: 1px;
-    font-weight: 600;
-}
-
-.dot {
-    width: 8px;
-    height: 8px;
-    background: #21262d;
-    border-radius: 50%;
-    transition: all 0.3s ease;
-}
-
-.dot.online {
-    background: var(--accent);
-    box-shadow: 0 0 12px var(--accent);
-}
-
-.active-pulse {
-    animation: pulse-ring 1s cubic-bezier(0.215, 0.61, 0.355, 1);
-}
-
-@keyframes pulse-ring {
-    0% {
-        transform: scale(1);
-        box-shadow: 0 0 0 0 var(--accent-glow);
-    }
-    70% {
-        transform: scale(1.2);
-        box-shadow: 0 0 0 10px transparent;
-    }
-    100% {
-        transform: scale(1);
-        box-shadow: 0 0 0 0 transparent;
-    }
-}
-
-/* --- Buttons --- */
-.primary-btn {
-    background: linear-gradient(135deg, var(--accent), var(--secondary));
-    color: white;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    padding: 16px 32px;
-    border-radius: 14px;
-    font-weight: 600;
+    font-weight: bold;
+    font-family: inherit;
+    cursor: pointer;
     font-size: 1rem;
-    cursor: pointer;
-    width: 100%;
-    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-    box-shadow: 0 4px 20px rgba(0, 119, 255, 0.25);
-    margin-top: 20px;
-}
-
-.primary-btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 30px rgba(0, 119, 255, 0.4);
-}
-
-.primary-btn:active {
-    transform: scale(0.98);
-}
-
-.primary-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-.secondary-btn {
-    background: rgba(255, 255, 255, 0.05);
-    color: var(--accent);
-    border: 1px solid var(--accent);
-    padding: 10px 20px;
-    border-radius: 8px;
-    font-weight: 600;
-    cursor: pointer;
-    width: 100%;
-    transition: all 0.2s ease;
-    margin-top: 15px;
-}
-
-.secondary-btn:hover {
-    background: rgba(0, 119, 255, 0.1);
-    box-shadow: 0 0 15px var(--accent-glow);
-}
-
-/* --- Layout Container (Fade In & Safe Areas) --- */
-.fade-in {
-    animation: fadeIn 0.5s ease-out;
-    width: 100%;
-    max-width: 420px;
-    margin: 0 auto;
-
-    padding-top: 80px;
-    padding-bottom: 60px;
-    padding-left: 24px;
-    padding-right: 24px;
-
-    box-sizing: border-box;
-    position: relative;
-}
-
-@keyframes fadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-error-btn {
-    background: #ff3e3e !important;
-    border-color: #ff0000 !important;
-    box-shadow: 0 0 20px rgba(255, 62, 62, 0.4) !important;
-    cursor: pointer !important;
-}
-
-.error-btn:hover {
-    background: #ff0000 !important;
 }
 
 .icon-btn {
@@ -299,69 +108,153 @@ error-btn {
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    padding: 0;
 }
 
-.icon-btn:hover {
-    background: rgba(0, 119, 255, 0.2);
-    border-color: #0077ff;
-    transform: rotate(180deg);
+.logo-title {
+    margin: 0;
+    font-size: 2.2rem;
+    font-weight: 800;
+    letter-spacing: -1px;
+    line-height: 1.2;
 }
 
-.recalibrate-svg {
-    width: 24px;
-    height: 24px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+.subtitle {
+    margin: 4px 0 0;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
-@media (max-height: 750px) {
-    body {
-        align-items: flex-start;
-        height: auto;
-        min-height: 100vh;
-        overflow-y: auto;
-        padding-top: 0;
-    }
+.accent {
+    color: var(--accent);
+}
+
+/* --- STAGE (The Center) --- */
+.stage {
+    flex: 1; /* Pushes Footer Down */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    padding: 40px 0; /* Add space around ring */
+}
+
+/* The Stacking Context for Halo + Ring */
+.orb-container {
+    position: relative;
+    width: 260px;
+    height: 260px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* FIX: Allow Halo to go outside this container */
+    overflow: visible;
+}
+
+/* FIX: Make HALO huge and visible */
+.halo-layer {
+    position: absolute;
+    /* Center it */
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+
+    /* Bigger than ring */
+    width: 500px; /* Huge to ensure bleed */
+    height: 500px;
+
+    z-index: 1;
+    pointer-events: none; /* Let clicks pass through */
+}
+
+/* Ring is on top */
+.ring-layer {
+    position: relative;
+    z-index: 10;
+}
+
+/* Status Pill */
+.pill-container {
+    margin-top: 32px;
+    height: 48px;
+    display: flex;
+    justify-content: center;
+}
+
+/* --- FOOTER (Scrollable) --- */
+.app-footer {
+    padding: 24px;
+    padding-bottom: 60px; /* Safe area for swipe bar */
+    text-align: center;
+    z-index: 20;
+    /* It will naturally expand if history list is long */
+}
+
+/* --- BUTTONS --- */
+.primary-btn {
+    background: linear-gradient(135deg, var(--accent), var(--secondary));
+    color: white;
+    border: none;
+    padding: 18px 32px;
+    border-radius: 30px;
+    font-weight: 700;
+    font-size: 1.1rem;
+    cursor: pointer;
+    box-shadow: 0 4px 20px rgba(0, 119, 255, 0.3);
+    transition: transform 0.2s;
+    width: 100%;
+}
+
+.primary-btn:active {
+    transform: scale(0.96);
+}
+
+
+.secondary-btn {
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 12px;
+    border-radius: 12px;
+    margin-top: 16px;
+    width: 100%;
+    cursor: pointer;
+}
+
+/* --- RTL SPECIFIC --- */
+[dir="rtl"] body {
+    font-family: 'Cairo', 'Inter', sans-serif;
+}
+
+[dir="rtl"] .logo-title {
+    letter-spacing: 0;
+    font-weight: 700;
+}
+
+[dir="rtl"] .subtitle {
+    letter-spacing: 0;
+    font-size: 0.9rem;
+}
+
+[dir="rtl"] .app-header {
+    text-align: center;
 }
 
 .version-tag {
-    position: fixed;
-    bottom: 10px;
-    left: 0;
-    right: 0;
-    text-align: center;
-    font-size: 0.7rem;
-    color: rgba(255, 255, 255, 0.2);
-    pointer-events: none;
+    display: inline-block;
+    font-size: 0.7em;
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-dim);
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 8px;
+    vertical-align: middle;
     font-family: 'JetBrains Mono', monospace;
-    z-index: 50;
-    padding-bottom: env(safe-area-inset-bottom);
 }
 
-.card {
-    width: 90%;
-    max-width: 340px;
-    padding: 24px;
-    border-radius: 28px;
-}
-
-.calibration-loader {
-    width: 50px;
-    height: 50px;
-    border: 3px solid rgba(0, 119, 255, 0.2);
-    border-top-color: #0077ff;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-    margin: 0 auto 20px;
-}
-
-@keyframes spin {
-    to {
-        transform: rotate(360deg);
-    }
+[dir="rtl"] .version-tag {
+    margin-left: 0;
+    margin-right: 8px;
 }
