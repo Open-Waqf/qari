@@ -7,6 +7,7 @@ import {
     installMicCapHotkey,
     installRawMicRecordHotkey
 } from "./debug/debug-hotkeys.ts";
+import {checkAudioParity} from "./debug/debug-extractor";
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
 
@@ -23,4 +24,5 @@ if (location.search.includes("debug=1")) {
     installRawMicRecordHotkey();   // Shift+R
     installInterferenceHotkey(); // Shift+N/E/C
     installFarFieldHotkey(); // Shift+F
+    (window as any).checkParity = checkAudioParity;
 }

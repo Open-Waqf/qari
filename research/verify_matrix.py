@@ -17,7 +17,7 @@ def verify_matrix_math():
 
     # 2. Load the Sine Wave (Signal)
     # We manually load to ensure parity with the browser's 512 samples
-    sr, y = wav.read("../app/public/test_sine.wav")
+    sr, y = wav.read("./test_sine.wav")
     y = y.astype(np.float32) / 32767.0 # Normalize to -1.0 to 1.0
     signal = y[0:512]
 
