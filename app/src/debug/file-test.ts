@@ -1,5 +1,6 @@
 import {inferenceEngine} from "../model/inference-engine";
 import {downsampleBuffer} from "../features/custom-extractor.ts";
+import {decodePcmWav} from "./wav.ts";
 
 async function decodeFileToAudioBuffer(file: File): Promise<AudioBuffer> {
     const arrayBuf = await file.arrayBuffer();
@@ -47,7 +48,24 @@ export async function runFileTest(file: File) {
     const ok = await inferenceEngine.setup();
     if (!ok) throw new Error("Model setup failed.");
 
-    // 1. Decode File
+    // ✅ FAST-PATH: miccap_16k WAVs should NOT go through WebAudio decode/resample
+    if (file.name.startsWith("miccap_16k_") && file.type.includes("wav")) {
+        const {samples, sampleRate} = await decodePcmWav(file);
+
+        const dur = samples.length / sampleRate;
+        console.log(`📁 FILETEST loaded (direct WAV): "${file.name}" | inSR=${sampleRate}Hz | dur=${dur.toFixed(2)}s`);
+
+        if (sampleRate !== 16000) {
+            console.warn(`⚠️ Expected 16k for miccap WAV, got ${sampleRate}. Will resample.`);
+            // fall back to your existing pipeline if it ever happens
+        } else {
+            await runScan(samples);
+            console.log("✅ FILETEST done.");
+            return;
+        }
+    }
+
+    // 1. Decode File (general path)
     const buf = await decodeFileToAudioBuffer(file);
     const mono = toMonoFloat32(buf);
 
@@ -57,28 +75,40 @@ export async function runFileTest(file: File) {
         sig16k = await resampleTo16k(mono, buf.sampleRate);
     } catch (e) {
         console.warn("OfflineAudioContext resample failed, falling back to linear resample:", e);
-        sig16k = downsampleBuffer(mono, buf.sampleRate, 16000); // fallback
+        sig16k = downsampleBuffer(mono, buf.sampleRate, 16000);
     }
 
     const dur = sig16k.length / 16000;
     console.log(`📁 FILETEST loaded: "${file.name}" | inSR=${buf.sampleRate}Hz | dur=${dur.toFixed(2)}s`);
 
-    // 3. Predict
-    const scanAll = confirm("Scan the whole file (every 1.0s window)?\nCancel = test 3 windows only.");
-
-    if (scanAll) {
-        const step = 1.0;
-        for (let s = 0; s + 3 <= dur; s += step) {
-            await inferenceEngine.predictFromSignal(sig16k, {startSec: s, windowSec: 3, log: true, dispatchToUI: true});
-        }
-    } else {
-        const mid = Math.max(0, dur / 2 - 1.5);
-        const end = Math.max(0, dur - 3);
-        for (const s of [0, mid, end]) {
-            await inferenceEngine.predictFromSignal(sig16k, {startSec: s, windowSec: 3, log: true, dispatchToUI: true});
-        }
-    }
-
+    await runScan(sig16k);
     console.log("✅ FILETEST done.");
 
+    async function runScan(sig16k: Float32Array) {
+        const dur = sig16k.length / 16000;
+        const scanAll = confirm("Scan the whole file (every 1.0s window)?\nCancel = test 3 windows only.");
+
+        if (scanAll) {
+            const step = 1.0;
+            for (let s = 0; s + 3 <= dur; s += step) {
+                await inferenceEngine.predictFromSignal(sig16k, {
+                    startSec: s,
+                    windowSec: 3,
+                    log: true,
+                    dispatchToUI: true
+                });
+            }
+        } else {
+            const mid = Math.max(0, dur / 2 - 1.5);
+            const end = Math.max(0, dur - 3);
+            for (const s of [0, mid, end]) {
+                await inferenceEngine.predictFromSignal(sig16k, {
+                    startSec: s,
+                    windowSec: 3,
+                    log: true,
+                    dispatchToUI: true
+                });
+            }
+        }
+    }
 }

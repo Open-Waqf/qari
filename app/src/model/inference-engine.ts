@@ -106,7 +106,7 @@ class InferenceEngine {
 
     // --- DSP State ---
     private filterState = {x1: 0, y1: 0};
-    private readonly HP_COEFF = 0.975;
+    private readonly HP_COEFF = 0.90;
 
     // --- Runtime ---
     private gate = {

@@ -38,33 +38,40 @@ npm run preview
 
 ---
 
-## Debug & Test Toolkit
+## 🧪 Debug Hotkeys (Audio + Inference)
 
-### Enable debug logging
+These hotkeys are meant to isolate *where* errors come from: file decode, resampling, live mic capture, or model DSP
+flags.
 
-Append `?debug=1` to the app URL to enable verbose logs inside the inference engine (feature stats, gate stats, top-k,
-etc).
+### Inference DSP toggles (affect model input)
 
-Example:
+- **Shift+N**: Toggle RMS Normalize (inferenceEngine)
+- **Shift+E**: Toggle Pre-Emphasis (inferenceEngine)
+- **Shift+C**: Toggle CMVN (inferenceEngine)
+- **Shift+F**: Toggle Far Field (AudioManager)
 
-* `http://localhost:5173/?debug=1`
+> Tip: Keep flags constant during comparisons. CMVN can drastically change input distribution unless the model was
+> trained with CMVN.
 
-### Debug Hotkeys (Shift + …)
+### Mic capture / recording tools
 
-| Hotkey      | What it does                                                                                                                                                   | Output file                           | What it validates                                                                                                   |
-|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------|---------------------------------------------------------------------------------------------------------------------|
-| **Shift+T** | **FILETEST**: run offline inference on a selected audio file using the same TFJS + extractor pipeline                                                          | none (you choose a file)              | “Model works on known audio” baseline (no mic / no worklet timing)                                                  |
-| **Shift+M** | **MICCAP (post-worklet)**: capture ~8s of **16k PCM chunks coming out of the resampler worklet**, save WAV, then run sliding-window analysis (`runMicCapTest`) | `miccap_16k_<ts>.wav` (PCM WAV @ 16k) | What the model actually receives from the live pipeline (resampler + browser audio graph)                           |
-| **Shift+R** | **RAW MIC RECORD (pre-worklet)**: record the browser’s `MediaStream` using `MediaRecorder` for ~8s                                                             | `raw_mic_<ts>.webm` / `.ogg` (Opus)   | What the mic stream sounds like **before** our worklet/resampler/graph (also captures browser processing artifacts) |
-| **Shift+L** | **FILE LOOPBACK**: play an audio file through an `AudioContext` + worklet to simulate “live” resampling, then analyze                                          | none (you choose a file)              | Resampler correctness and “live-like” transport without real mic hardware                                           |
-| **Shift+F** | Toggle Far-Field mode (echo cancel / NS / AGC) and request engine restart                                                                                      | none                                  | Whether browser-side processing is causing domain shift                                                             |
-| **Shift+N** | Toggle RMS normalization in the inference pipeline                                                                                                             | none                                  | Sensitivity to level differences / gain                                                                             |
-| **Shift+E** | Toggle pre-emphasis in the inference pipeline                                                                                                                  | none                                  | Sensitivity to high-freq emphasis                                                                                   |
-| **Shift+C** | Toggle CMVN inside feature extraction                                                                                                                          | none                                  | Sensitivity to per-clip normalization                                                                               |
+- **Shift+R**: Record **RAW mic stream** using `MediaRecorder` on `getUserMedia()` stream  
+  Output: `raw_mic_<ts>.webm` or `.ogg` (Opus).  
+  Purpose: hear/test what the browser + mic capture produces *before* the worklet pipeline.
 
-### What each recorder captures (important)
+- **Shift+M**: MICCAP capture of **post-worklet 16k PCM** chunks  
+  First press starts capture (8s). Second press stops/saves.  
+  Output: `miccap_16k_<ts>.wav` (PCM16 WAV @ 16k). Also runs `runMicCapTest()` on the captured signal.  
+  Purpose: capture exactly what the model receives in the live pipeline.
 
-* **Shift+R (Raw mic)** records the **browser MediaStream** (compressed Opus). This is *pre-worklet*. Great for
-  listening to “what the browser mic stream sounds like”.
-* **Shift+M (MicCap16k)** captures the **post-worklet 16k Float32 chunks** (the same chunks fed into
-  `handleIncomingAudio`). This is the best “what the model actually saw” capture.
+### File-based evaluation
+
+- **Shift+T**: FILETEST – run inference on a selected audio file
+    - Decodes file -> converts to mono -> resamples to 16k -> scans 3s windows.
+    - If the selected file is a direct 16k WAV, it uses the direct WAV fast-path.
+
+### Pipeline simulation
+
+- **Shift+L**: LOOPBACK – play a file through a forced 48k AudioContext + worklet, collect chunks, downsample to 16k,
+  then run `runMicCapTest()`.
+  Purpose: stress-test resampling / buffering like live mode.

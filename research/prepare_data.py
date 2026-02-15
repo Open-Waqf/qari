@@ -14,11 +14,19 @@ OUTPUT_PATH = "features.npz"
 
 # --- 1. DEFINE THE "BAD MIC" SIMULATOR ---
 augment = Compose([
-    # Use "min_gain_db" for newer audiomentations versions
-    Gain(min_gain_db=-15.0, max_gain_db=5.0, p=1.0),
-    AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.5),
-    HighPassFilter(min_cutoff_freq=50, max_cutoff_freq=200, p=0.5),
-    LowPassFilter(min_cutoff_freq=3500, max_cutoff_freq=7500, p=0.5),
+    # Gain: Moderate range (-6 to +3) to avoid extreme quietness that confuses the model
+    Gain(min_gain_db=-6.0, max_gain_db=3.0, p=0.8),
+
+    # Noise: Subtle background hiss (Laptop fan / AC)
+    AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.005, p=0.3),
+
+    # HighPass: Cuts "Mud" and "Rumble" (80-300Hz)
+    # This prevents the "Fares Abbad" confusion caused by deep bass
+    HighPassFilter(min_cutoff_freq=80, max_cutoff_freq=300, p=0.5),
+
+    # LowPass: Cuts "Hiss" but KEEPS Voice Clarity (6000Hz+)
+    # 🛑 CRITICAL: Do not go below 6000Hz, or Ghamdi will sound muffled
+    LowPassFilter(min_cutoff_freq=6000, max_cutoff_freq=7800, p=0.3),
 ])
 
 
@@ -130,10 +138,12 @@ def process_dataset():
                     dirty_entry = _mfcc_image_from_chunk(dirty_chunk)
 
                     # Append only if both succeeded (unchanged behavior)
+                    # 1. CLEAN (Weight 1.0)
                     X.append(clean_entry)
                     y.append(label_map[reciter])
                     groups.append(file_counter)
 
+                    # 2. DIRTY (Weight 0.4)
                     X.append(dirty_entry)
                     y.append(label_map[reciter])
                     groups.append(file_counter)
