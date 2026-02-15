@@ -65,4 +65,19 @@ export class CustomAudioExtractor {
 
 }
 
+export function downsampleBuffer(buffer: Float32Array, inputRate: number, outputRate: number): Float32Array {
+    if (inputRate === outputRate) return buffer;
+    const ratio = inputRate / outputRate;
+    const newLength = Math.round(buffer.length / ratio);
+    const result = new Float32Array(newLength);
+    for (let i = 0; i < newLength; i++) {
+        const originalIndex = i * ratio;
+        const index1 = Math.floor(originalIndex);
+        const index2 = Math.ceil(originalIndex);
+        const weight = originalIndex - index1;
+        result[i] = (buffer[index1] || 0) * (1 - weight) + (buffer[index2] || 0) * weight;
+    }
+    return result;
+}
+
 export const customExtractor = new CustomAudioExtractor();

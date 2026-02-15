@@ -1,141 +1,179 @@
 import json
 import os
-import subprocess
 
 import numpy as np
-from sklearn.model_selection import GroupShuffleSplit, train_test_split
+import tensorflow as tf
+from sklearn.model_selection import GroupShuffleSplit
 from tensorflow import keras
 
-# Settings
+# Settings (must match prepare_data output)
 INPUT_SHAPE = (40, 186, 1)
-BATCH_SIZE = 32
-EPOCHS = 25
+BATCH_SIZE = 64
+EPOCHS = 60
+
+
+# --- SpecAugment (Gentle) ---
+class SpecAugment(keras.layers.Layer):
+    def __init__(self, freq_mask_param=3, time_mask_param=12, **kwargs):
+        super(SpecAugment, self).__init__(**kwargs)
+        self.freq_mask_param = freq_mask_param
+        self.time_mask_param = time_mask_param
+
+    def call(self, inputs, training=None):
+        if not training:
+            return inputs
+
+        # Frequency masking (gentle)
+        num_freq = tf.shape(inputs)[1]
+        f = tf.random.uniform([], minval=0, maxval=self.freq_mask_param + 1, dtype=tf.int32)
+        f0 = tf.random.uniform([], minval=0, maxval=tf.maximum(1, num_freq - f), dtype=tf.int32)
+        mask_freq = tf.concat(
+            [
+                tf.ones([1, f0, 1, 1]),
+                tf.zeros([1, f, 1, 1]),
+                tf.ones([1, tf.maximum(0, num_freq - f0 - f), 1, 1]),
+            ],
+            axis=1,
+        )
+        inputs = inputs * mask_freq
+
+        # Time masking (gentle)
+        num_time = tf.shape(inputs)[2]
+        t = tf.random.uniform([], minval=0, maxval=self.time_mask_param + 1, dtype=tf.int32)
+        t0 = tf.random.uniform([], minval=0, maxval=tf.maximum(1, num_time - t), dtype=tf.int32)
+        mask_time = tf.concat(
+            [
+                tf.ones([1, 1, t0, 1]),
+                tf.zeros([1, 1, t, 1]),
+                tf.ones([1, 1, tf.maximum(0, num_time - t0 - t), 1]),
+            ],
+            axis=2,
+        )
+        return inputs * mask_time
+
+    def get_config(self):
+        config = super(SpecAugment, self).get_config()
+        config.update(
+            {"freq_mask_param": self.freq_mask_param, "time_mask_param": self.time_mask_param}
+        )
+        return config
 
 
 def train_model():
     print("⏳ Loading dataset...")
-    if not os.path.exists("features.npz"):
-        print("❌ Error: features.npz not found.")
-        return
-
     data = np.load("features.npz", allow_pickle=True)
     X = data["X"]
     y = data["y"]
-    mapping = data["mapping"].item()  # {'afasy': 0, 'sudais': 1...}
+    groups = data["groups"]
+    mapping = data["mapping"].item()
 
-    # Save the mapping to a JSON file (App needs this to know who is who!)
-    # Ensure the app folder exists
+    # 1) Export Reciters Map
     model_output_dir = "../app/public/models"
     os.makedirs(model_output_dir, exist_ok=True)
 
-    # Create a sorted list based on IDs
     labels_array = [None] * len(mapping)
     for name, idx in mapping.items():
         labels_array[idx] = name
-
     with open(f"{model_output_dir}/reciters_map.json", "w") as f:
-        json.dump(labels_array, f)  # Save as [ "afasy", "sudais", ... ]
-    print(f"✅ Saved reciters_map.json to {model_output_dir}")
+        json.dump(labels_array, f)
 
-    # 2. Preprocessing
-    # Reshape X to fit CNN: (Batch, Height, Width, Channels)
-    # Our prepared data is (Batch, 40, 186), we add '1' for "Grayscale Channel"
+    # 2) Reshape
     X = X[..., np.newaxis]
 
-    # Normalize inputs (Standard ML best practice)
-    # Our features are roughly -100 to 50. We scale to roughly 0-1
-    mean = float(np.mean(X))  # Convert to standard float for JSON
-    std = float(np.std(X))
+    # 2.5) Sample weights (Clean=1.0, Dirty=0.4)
+    # prepare_data saved: [clean, dirty, clean, dirty...]
+    sample_weights = np.ones(len(y), dtype=np.float32)
+    sample_weights[1::2] = 0.4
+
+    # 3) Clean-only normalization stats (keep exactly as you had)
+    print("📏 Calculating Normalization Stats (Clean Data Only)...")
+    X_clean_only = X[::2]
+    mean = float(np.mean(X_clean_only))
+    std = float(np.std(X_clean_only))
+    std = max(std, 1e-6)
+    print(f"   Mean: {mean:.4f}, Std: {std:.4f}")
+
     X = (X - mean) / std
-    print(f"Dataset Normalized. Mean: {mean:.2f}, Std: {std:.2f}")
 
-    # --- 1. NEW: EXPORT NORMALIZATION ---
-    normalization_data = {"mean": mean, "std": std}
     with open(f"{model_output_dir}/normalization.json", "w") as f:
-        json.dump(normalization_data, f)
-    print(f"✅ Saved normalization.json to {model_output_dir}")
+        json.dump({"mean": mean, "std": std}, f)
 
-    # --- 2. NEW: LEAKAGE-PROOF SPLIT ---
-    if "groups" in data:
-        groups = data["groups"]
-        splitter = GroupShuffleSplit(test_size=0.2, n_splits=1, random_state=42)
-        train_idx, test_idx = next(splitter.split(X, y, groups))
+    # 4) Split (split weights too)
+    splitter = GroupShuffleSplit(test_size=0.2, n_splits=1, random_state=42)
+    train_idx, test_idx = next(splitter.split(X, y, groups))
 
-        X_train, X_test = X[train_idx], X[test_idx]
-        y_train, y_test = y[train_idx], y[test_idx]
-        print(f"✅ Splitting by FILE (Leakage fixed). Train: {len(X_train)}, Test: {len(X_test)}")
-    else:
-        print("⚠️ Warning: No 'groups' found. Using random split (Potential Leakage).")
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    # -----------------------------------
+    X_train, X_test = X[train_idx], X[test_idx]
+    y_train, y_test = y[train_idx], y[test_idx]
+    w_train, w_test = sample_weights[train_idx], sample_weights[test_idx]
 
-    # 3. Build the Model (CNN)
-    # This architecture is optimized for Spectrograms (Audio Images)
-    model = keras.Sequential([
-        keras.Input(shape=INPUT_SHAPE),
+    print(f"✅ Data Ready. Train: {len(X_train)}, Test: {len(X_test)}")
 
-        # Layer 1: Detects basic edges/textures
-        keras.layers.Conv2D(16, (3, 3), activation='relu', padding='same'),
-        keras.layers.MaxPooling2D((2, 2)),
-        keras.layers.BatchNormalization(),
+    # 5) Model (GAP + BN + no Flatten)
+    model = keras.Sequential(
+        [
+            keras.Input(shape=INPUT_SHAPE),
 
-        # Layer 2: Detects shapes
-        keras.layers.Conv2D(32, (3, 3), activation='relu', padding='same'),
-        keras.layers.MaxPooling2D((2, 2)),
-        keras.layers.Dropout(0.25),
+            # SpecAugment is optional; keep gentle because you already have dirty data
+            SpecAugment(freq_mask_param=3, time_mask_param=12),
 
-        # Layer 3: Detects complex voice patterns
-        keras.layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
-        keras.layers.MaxPooling2D((2, 2)),
+            # Block 1: Conv -> BN -> ReLU
+            keras.layers.Conv2D(32, (3, 3), padding="same", use_bias=False),
+            keras.layers.BatchNormalization(),
+            keras.layers.Activation("relu"),
+            keras.layers.MaxPooling2D((2, 2)),
 
-        # Flatten and Classify
-        keras.layers.Flatten(),
-        keras.layers.Dense(64, activation='relu'),
-        keras.layers.Dropout(0.5),
+            # Block 2
+            keras.layers.Conv2D(64, (3, 3), padding="same", use_bias=False),
+            keras.layers.BatchNormalization(),
+            keras.layers.Activation("relu"),
+            keras.layers.MaxPooling2D((2, 2)),
+            keras.layers.Dropout(0.25),
 
-        # Output Layer: One neuron per Reciter
-        keras.layers.Dense(len(mapping), activation='softmax')
-    ])
+            # Block 3
+            keras.layers.Conv2D(128, (3, 3), padding="same", use_bias=False),
+            keras.layers.BatchNormalization(),
+            keras.layers.Activation("relu"),
+            keras.layers.MaxPooling2D((2, 2)),
+            keras.layers.Dropout(0.30),
 
-    model.compile(optimizer='adam',
-                  loss='sparse_categorical_crossentropy',
-                  metrics=['accuracy'])
+            # Head: GAP (big generalization win vs Flatten)
+            keras.layers.GlobalAveragePooling2D(),
 
-    model.summary()
+            keras.layers.Dense(128, activation="relu"),
+            keras.layers.Dropout(0.40),
 
-    # 4. Train
-    print("🚀 Starting Training...")
-    history = model.fit(X_train, y_train,
-                        epochs=EPOCHS,
-                        batch_size=BATCH_SIZE,
-                        validation_data=(X_test, y_test))
+            keras.layers.Dense(len(mapping), activation="softmax"),
+        ]
+    )
 
-    # 5. Evaluate
-    test_loss, test_acc = model.evaluate(X_test, y_test)
-    print(f"\n✅ Final Test Accuracy: {test_acc * 100:.2f}%")
+    model.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=0.001),
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
+        metrics=["accuracy"],
+    )
 
-    # 6. Save as Keras Model first
+    # 6) Callbacks (val_accuracy is more meaningful for you than val_loss)
+    early_stop = keras.callbacks.EarlyStopping(
+        monitor="val_accuracy", patience=10, restore_best_weights=True
+    )
+    reduce_lr = keras.callbacks.ReduceLROnPlateau(
+        monitor="val_loss", factor=0.5, patience=3, min_lr=1e-5
+    )
+
+    print("🚀 Starting Training (GAP + Sample Weights)...")
+    model.fit(
+        X_train,
+        y_train,
+        sample_weight=w_train,
+        epochs=EPOCHS,
+        batch_size=BATCH_SIZE,
+        validation_data=(X_test, y_test, w_test),
+        callbacks=[early_stop, reduce_lr],
+    )
+
     model.save("qari_model.h5")
-    print("💾 Saved Keras model to qari_model.h5")
-
-    # 7. Convert to TFJS (The Final Artifact)
-    print("🔄 Converting to TensorFlow.js...")
-
-    # We use 'subprocess' to call the converter command line tool
-    output_path = f"{model_output_dir}/tfjs_model"
-    cmd = [
-        "tensorflowjs_converter",
-        "--input_format=keras",
-        "qari_model.h5",
-        output_path
-    ]
-    # Run the command
-    subprocess.run(cmd, check=True)
-
-    if os.path.exists(output_path):
-        print(f"🎉 SUCCESS! Model Converted! Saved to {output_path}")
-    else:
-        print("⚠️ Warning: Conversion might have failed. Check if 'tensorflowjs_converter' is in your PATH.")
+    print("\n✅ Training Complete.")
+    print("⚠️ NOW RUN: python convert_wizard.py")
 
 
 if __name__ == "__main__":

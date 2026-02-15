@@ -3,57 +3,76 @@ import {inferenceEngine} from "../model/inference-engine";
 function rmsOf(x: Float32Array) {
     let sum = 0;
     for (let i = 0; i < x.length; i++) sum += x[i] * x[i];
-    return Math.sqrt(sum / x.length);
+    return Math.sqrt(sum / Math.max(1, x.length));
+}
+
+function entropyNormalized(probs: number[]) {
+    const N = probs.length;
+    if (N <= 1) return 0;
+    let e = 0;
+    for (const p of probs) if (p > 0) e -= p * Math.log(p);
+    return e / Math.log(N);
 }
 
 export async function runMicCapTest(signal16k: Float32Array) {
     const SR = 16000;
-    const WIN = 3 * SR;   // 3s
-    const HOP = 1 * SR;   // 1s
+    const WIN = 3 * SR;
+    const HOP = 1 * SR;
 
     console.log(`🏁 MICCAP | dur=${(signal16k.length / SR).toFixed(2)}s`);
 
-    const candidates: { startSec: number; rms: number; ent: number; top3: any[] }[] = [];
+    let sumProbs: number[] | null = null;
+    let wSum = 0;
 
     for (let start = 0; start + WIN <= signal16k.length; start += HOP) {
         const startSec = start / SR;
         const window = signal16k.subarray(start, start + WIN);
         const r = rmsOf(window);
 
-        // Skip near-silent windows (tune if needed)
-        if (r < 0.01) {
+        // IMPORTANT: mic often comes in quieter than you think
+        if (r < 0.003) {
             console.log(`🏁 MICCAP | start=${startSec.toFixed(2)}s rms=${r.toFixed(4)} SKIP(silent)`);
             continue;
         }
 
-        const {ent, top3} = await inferenceEngine.predictFromSignal(window);
+        const result = await inferenceEngine.predictFromSignal(window, {
+            startSec: 0,
+            windowSec: 3,
+            log: false,
+            dispatchToUI: false,
+            independent: true,
+        });
+
+        const probs = result.probs;
+        const ent = result.raw.ent;
+        const top3 = result.raw.top3;
+
         console.log(
             `🏁 MICCAP | start=${startSec.toFixed(2)}s rms=${r.toFixed(4)} ent=${ent.toFixed(3)} | ` +
-            top3.map((t: any) => `${t.name}:${(t.score * 100).toFixed(1)}%`).join(" | ")
+            top3.map(t => `${t.name}:${(t.score * 100).toFixed(1)}%`).join(" | ")
         );
 
-        candidates.push({startSec, rms: r, ent, top3});
+        // weight: louder + more confident windows count more
+        const w = r * (1 - ent);
+        if (!sumProbs) sumProbs = new Array(probs.length).fill(0);
+        for (let i = 0; i < probs.length; i++) sumProbs[i] += probs[i] * w;
+        wSum += w;
 
-        await new Promise<void>(r => requestAnimationFrame(() => r()));
+        await new Promise<void>(rr => requestAnimationFrame(() => rr()));
     }
 
-    if (candidates.length === 0) {
-        console.log("🏁 MICCAP FINAL | no non-silent windows found (increase volume / move closer)");
+    if (!sumProbs || wSum <= 0) {
+        console.log("🏁 MICCAP FINAL | no non-silent windows found");
         return;
     }
 
-    // Pick best by (lowest entropy, then highest top1 score)
-    candidates.sort((a, b) => {
-        const a1 = a.top3?.[0]?.score ?? 0;
-        const b1 = b.top3?.[0]?.score ?? 0;
-        if (a.ent !== b.ent) return a.ent - b.ent;
-        return b1 - a1;
-    });
+    const avg = sumProbs.map(v => v / wSum);
+    const entFinal = entropyNormalized(avg);
 
-    const best = candidates[0];
-    const bestTop1 = best.top3?.[0];
-    console.log(
-        `🏁 MICCAP FINAL | bestStart=${best.startSec.toFixed(2)}s rms=${best.rms.toFixed(4)} ent=${best.ent.toFixed(3)} | ` +
-        `${bestTop1?.name ?? "?"}:${((bestTop1?.score ?? 0) * 100).toFixed(1)}%`
-    );
+    // If your predictFromSignal already returns formatted names in raw.top3, you can just compute top3 here
+    // using engine labels if exposed; otherwise use a simple “best index” log:
+    const bestIdx = avg.reduce((bi, v, i) => (v > avg[bi] ? i : bi), 0);
+    const bestScore = avg[bestIdx];
+
+    console.log(`🏁 MICCAP FINAL | avg ent=${entFinal.toFixed(3)} | bestIdx=${bestIdx} score=${(bestScore * 100).toFixed(1)}%`);
 }

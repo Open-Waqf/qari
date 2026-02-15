@@ -1,4 +1,5 @@
 import {inferenceEngine} from "../model/inference-engine";
+import {downsampleBuffer} from "../features/custom-extractor.ts";
 
 async function decodeFileToAudioBuffer(file: File): Promise<AudioBuffer> {
     const arrayBuf = await file.arrayBuffer();
@@ -7,7 +8,6 @@ async function decodeFileToAudioBuffer(file: File): Promise<AudioBuffer> {
     try {
         return await ctx.decodeAudioData(arrayBuf.slice(0));
     } finally {
-        // close to free resources (safe in modern browsers)
         await ctx.close().catch(() => {
         });
     }
@@ -15,9 +15,9 @@ async function decodeFileToAudioBuffer(file: File): Promise<AudioBuffer> {
 
 function toMonoFloat32(buf: AudioBuffer): Float32Array {
     const ch = buf.numberOfChannels;
-    const len = buf.length;
     if (ch === 1) return buf.getChannelData(0).slice();
 
+    const len = buf.length;
     const out = new Float32Array(len);
     const c0 = buf.getChannelData(0);
     const c1 = buf.getChannelData(1);
@@ -25,41 +25,45 @@ function toMonoFloat32(buf: AudioBuffer): Float32Array {
     return out;
 }
 
-async function resampleTo16k(mono: Float32Array, inRate: number): Promise<Float32Array> {
-    if (inRate === 16000) return mono;
+async function resampleTo16k(mono: Float32Array, inSR: number): Promise<Float32Array> {
+    if (inSR === 16000) return mono;
 
-    const durationSec = mono.length / inRate;
-    const outLen = Math.max(1, Math.round(durationSec * 16000));
+    const length16k = Math.ceil(mono.length * 16000 / inSR);
+    const offline = new OfflineAudioContext(1, length16k, 16000);
 
-    const oac = new OfflineAudioContext(1, outLen, 16000);
+    const srcBuf = offline.createBuffer(1, mono.length, inSR);
+    srcBuf.copyToChannel(mono as any, 0);
 
-    // create a buffer at ORIGINAL rate, then OfflineAudioContext will resample when rendering at 16k
-    const tmp = oac.createBuffer(1, mono.length, inRate);
-    tmp.copyToChannel(mono as any, 0);
-
-    const src = oac.createBufferSource();
-    src.buffer = tmp;
-    src.connect(oac.destination);
+    const src = offline.createBufferSource();
+    src.buffer = srcBuf;
+    src.connect(offline.destination);
     src.start();
 
-    const rendered = await oac.startRendering();
+    const rendered = await offline.startRendering();
     return rendered.getChannelData(0).slice();
 }
 
 export async function runFileTest(file: File) {
-
-    // Ensure model is ready (won't regress your flow; it just loads if needed)
     const ok = await inferenceEngine.setup();
     if (!ok) throw new Error("Model setup failed.");
 
+    // 1. Decode File
     const buf = await decodeFileToAudioBuffer(file);
     const mono = toMonoFloat32(buf);
-    const sig16k = await resampleTo16k(mono, buf.sampleRate);
+
+    // 2. Downsample (Unified Method)
+    let sig16k: Float32Array;
+    try {
+        sig16k = await resampleTo16k(mono, buf.sampleRate);
+    } catch (e) {
+        console.warn("OfflineAudioContext resample failed, falling back to linear resample:", e);
+        sig16k = downsampleBuffer(mono, buf.sampleRate, 16000); // fallback
+    }
 
     const dur = sig16k.length / 16000;
     console.log(`📁 FILETEST loaded: "${file.name}" | inSR=${buf.sampleRate}Hz | dur=${dur.toFixed(2)}s`);
 
-    // Ask whether to scan whole file or just sample 3 windows
+    // 3. Predict
     const scanAll = confirm("Scan the whole file (every 1.0s window)?\nCancel = test 3 windows only.");
 
     if (scanAll) {
@@ -76,4 +80,5 @@ export async function runFileTest(file: File) {
     }
 
     console.log("✅ FILETEST done.");
+
 }

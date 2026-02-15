@@ -7,99 +7,128 @@ import {audioManager} from "../core/audio-manager.ts";
 export const STATE_IDLE = 'Analyzing...';
 
 /**
- * Central configuration for thresholds and gains.
- * Keep all “magic numbers” here so tuning is easy.
+ * Dummy SpecAugment layer for TensorFlow.js.
  */
+class SpecAugment extends tf.layers.Layer {
+    constructor(config: any) {
+        super(config);
+    }
+
+    call(inputs: tf.Tensor | tf.Tensor[]): tf.Tensor | tf.Tensor[] {
+        return Array.isArray(inputs) ? inputs[0] : inputs;
+    }
+
+    static get className() {
+        return 'SpecAugment';
+    }
+}
+
 interface EngineConfig {
     // DSP / gains
     targetRms: number;
     minGain: number;
     maxGain: number;
-    preEmphasisAlpha: number;
 
     // Voice gating
-    silenceThreshold: number; // floor clamp
-    snrOn: number;            // enter voiced when rms >= noiseFloor * snrOn
-    snrOff: number;           // stay voiced while rms >= noiseFloor * snrOff
-    voicedHangMax: number;    // chunks to bridge gaps
+    silenceThreshold: number;
+    snrOn: number;
+    snrOff: number;
+    voicedHangMax: number;
 
     // Timing
     predictionIntervalMs: number;
 
     // Stability
     stabilityThreshold: number;
-
-    // Smoothing window
     smoothingFrames: number;
-
-    // Dispatch throttling
     dispatchMinIntervalMs: number;
-
-    // Misc
-    noiseAdaptAlpha: number; // small = slower adaption (e.g. 0.005)
+    noiseAdaptAlpha: number;
 }
+
+tf.serialization.registerClass(SpecAugment);
 
 class InferenceEngine {
     private static instance: InferenceEngine;
 
-    // --- Core dependencies ---
+    // --- Dependencies ---
     private model: tf.LayersModel | null = null;
     private labels: string[] = [];
     private normalization = {mean: 0, std: 1};
     private buffer: RingBuffer;
 
+    private gateScratch: Float32Array | null = null;
+
+    private acceptTop1Min = 0.14;
+
+    // --- Debug State ---
+    // ✅ NEW: Auto-detect debug mode from URL
+    private isDebug = typeof window !== 'undefined' && window.location.search.includes('debug=1');
+
     // --- Configuration ---
     private config: EngineConfig = {
+        // ✅ CHANGED: Unlocked Gain Settings
         targetRms: 0.10,
-        minGain: 0.25,
-        maxGain: 6.0,
-        preEmphasisAlpha: 0.97,
+        minGain: 0.6,
+        maxGain: 2.5,
 
-        silenceThreshold: 0.006,
+        silenceThreshold: 0.002,
         snrOn: 2.0,
         snrOff: 1.4,
         voicedHangMax: 15,
 
         predictionIntervalMs: 500,
 
-        stabilityThreshold: 2,
-        smoothingFrames: 5,
-
+        stabilityThreshold: 3,
+        smoothingFrames: 8,
         dispatchMinIntervalMs: 150,
-
         noiseAdaptAlpha: 0.005,
     };
 
-    // --- Feature flags (toggles) ---
+    // --- Feature flags ---
     private flags = {
-        rmsNormalize: true,  // ON by default for mic robustness
-        preEmphasis: false,  // OFF by default
+        rmsNormalize: true,
+        preEmphasis: false,
         cmvn: false,
     };
 
-    // --- Runtime: voice gate ---
+    public setThreshold(t: number) {
+        if (!Number.isFinite(t)) return;
+        // clamp to sane range
+        this.acceptTop1Min = Math.min(0.99, Math.max(0.01, t));
+        if (this.isDebug) {
+            console.log(`🎚️ acceptTop1Min=${(this.acceptTop1Min * 100).toFixed(1)}%`);
+        }
+    }
+
+    public getThreshold() {
+        return this.acceptTop1Min;
+    }
+
+    // --- DSP State ---
+    private filterState = {x1: 0, y1: 0};
+    private readonly HP_COEFF = 0.975;
+
+    // --- Runtime ---
     private gate = {
-        noiseFloor: 0.0015,  // start low; adapts
+        noiseFloor: 0.0015,
         isVoiced: false,
         hangCounter: 0,
         silenceCounter: 0,
     };
 
-    // --- Runtime: inference / stability / dispatch ---
     private state = {
         isPredicting: false,
         lastPredictionTime: 0,
         recentScores: [] as number[][],
-
         pendingWinner: null as string | null,
         pendingCount: 0,
         stableWinner: null as QariMatch | null,
-
         lastDispatchWinner: '',
         lastDispatchTime: 0,
+        noWinCount: 0,
     };
 
-    // --- Debug / stats ---
+    // --- Debug ---
     private debug = {
         written: 0,
         skipped: 0,
@@ -119,17 +148,14 @@ class InferenceEngine {
     }
 
     // =========================================
-    // Setup & reset
+    // Setup & Configuration
     // =========================================
 
     async setup(): Promise<boolean> {
         try {
             await tf.ready();
-
-            // Prefer WASM if available (often better on mobile), else WebGL
-            if (tf.findBackend('wasm')) {
-                await tf.setBackend('wasm');
-            } else if (tf.findBackend('webgl')) {
+            if (tf.findBackend('wasm')) await tf.setBackend('wasm');
+            else if (tf.findBackend('webgl')) {
                 await tf.setBackend('webgl');
                 tf.env().set('WEBGL_PACK', false);
             }
@@ -152,91 +178,84 @@ class InferenceEngine {
             console.error('Brain Offline:', e);
             return false;
         } finally {
-            console.log(`🧪 CMVN: ${inferenceEngine.isCmvnEnabled() ? "ON" : "OFF"}`);
-            console.log(`🧪 Far Field Mode: ${audioManager.isFarFieldMode() ? "ON" : "OFF"}`);
-            console.log(`🧪 PreEmphasis: ${inferenceEngine.isPreEmphasisEnabled() ? "ON" : "OFF"}`);
-            console.log(`🧪 RMS Normalized: ${inferenceEngine.isRmsNormalizeEnabled() ? "ON" : "OFF"}`);
+            if (this.isDebug) {
+                this.logConfigStatus();
+            }
         }
     }
 
-    /** Public reset (internal state + UI idle). */
+    private logConfigStatus() {
+        console.log(`🧪 CMVN: ${this.flags.cmvn ? "ON" : "OFF"}`);
+        console.log(`🧪 Far Field Mode: ${audioManager.isFarFieldMode() ? "ON" : "OFF"}`);
+        console.log(`🧪 PreEmphasis: ${this.flags.preEmphasis ? "ON" : "OFF"}`);
+        console.log(`🧪 RMS Normalized: ${this.flags.rmsNormalize ? "ON" : "OFF"}`);
+    }
+
     public reset() {
         this.resetState();
         this.emitIdle();
-        console.log('🧹 Inference Engine State Reset');
+        if (this.isDebug) console.log('🧹 Inference Engine State Reset');
     }
 
-    /** Internal-only reset (no UI dispatch). */
     private resetState() {
-        // Gate
         this.gate.silenceCounter = 0;
         this.gate.isVoiced = false;
         this.gate.hangCounter = 0;
-
-        // Buffer & inference
+        this.filterState = {x1: 0, y1: 0};
         this.buffer.clear();
         this.state.recentScores = [];
         this.state.pendingWinner = null;
         this.state.pendingCount = 0;
         this.state.stableWinner = null;
-
-        // Dispatch throttles
         this.state.lastDispatchWinner = '';
         this.state.lastDispatchTime = 0;
-
-        // Stats
-        this.debug.written = 0;
-        this.debug.skipped = 0;
+        this.state.noWinCount = 0;
     }
 
     // =========================================
-    // Toggles & setters
+    // Toggles
     // =========================================
 
-    public isRmsNormalizeEnabled(): boolean {
+    public isRmsNormalizeEnabled() {
         return this.flags.rmsNormalize;
     }
 
     public toggleRmsNormalize() {
         this.flags.rmsNormalize = !this.flags.rmsNormalize;
-        console.log(`🧪 RMS Normalize: ${this.flags.rmsNormalize ? 'ON' : 'OFF'}`);
     }
 
-    public isPreEmphasisEnabled(): boolean {
+    public isPreEmphasisEnabled() {
         return this.flags.preEmphasis;
     }
 
     public togglePreEmphasis() {
         this.flags.preEmphasis = !this.flags.preEmphasis;
-        console.log(`🧪 PreEmphasis: ${this.flags.preEmphasis ? 'ON' : 'OFF'}`);
     }
 
-    public isCmvnEnabled(): boolean {
+    public isCmvnEnabled() {
         return this.flags.cmvn;
     }
 
     public toggleCMVN() {
         this.flags.cmvn = !this.flags.cmvn;
-        console.log(`🧪 CMVN: ${this.flags.cmvn ? 'ON' : 'OFF'}`);
-    }
-
-    /**
-     * Treat this as a *floor clamp* (don’t let gates go below it).
-     * For UI tuning, changing SNR often works better than raw RMS.
-     */
-    public setThreshold(newThreshold: number) {
-        this.config.silenceThreshold = Math.max(newThreshold, 0.002);
-    }
-
-    /** Optional tuning: SNR thresholds (recommended over raw RMS). */
-    public setSNR(snrOn: number, snrOff?: number) {
-        this.config.snrOn = Math.min(6.0, Math.max(1.5, snrOn));
-        this.config.snrOff = Math.min(this.config.snrOn, Math.max(1.1, snrOff ?? this.config.snrOn * 0.7));
     }
 
     // =========================================
-    // DSP helpers
+    // Core DSP Logic
     // =========================================
+
+    private applyHighPassInPlace(chunk: Float32Array) {
+        let {x1, y1} = this.filterState;
+        const R = this.HP_COEFF;
+        for (let i = 0; i < chunk.length; i++) {
+            const x0 = chunk[i];
+            const y0 = x0 - x1 + R * y1;
+            chunk[i] = y0;
+            x1 = x0;
+            y1 = y0;
+        }
+        this.filterState = {x1, y1};
+    }
 
     private calculateRms(x: Float32Array): number {
         let sum = 0;
@@ -244,15 +263,7 @@ class InferenceEngine {
         return Math.sqrt(sum / Math.max(1, x.length));
     }
 
-    /**
-     * Normalize window loudness to target RMS (linear gain only).
-     * - caps gain so we don't explode noise
-     * - clamps output to [-1, 1]
-     */
-    private normalizeSignal(
-        x: Float32Array,
-        floor = 0.002
-    ): { y: Float32Array; gain: number; rms: number } {
+    private normalizeSignal(x: Float32Array, floor = 0.002): { y: Float32Array; gain: number; rms: number } {
         const r = this.calculateRms(x);
         if (r < floor) return {y: x, gain: 1, rms: r};
 
@@ -264,7 +275,8 @@ class InferenceEngine {
         const y = new Float32Array(x.length);
         for (let i = 0; i < x.length; i++) {
             const v = x[i] * g;
-            y[i] = v > 1 ? 1 : (v < -1 ? -1 : v);
+            // tanh-ish soft clip
+            y[i] = v / (1 + Math.abs(v));
         }
         return {y, gain: g, rms: r};
     }
@@ -273,93 +285,138 @@ class InferenceEngine {
         const y = new Float32Array(x.length);
         if (x.length === 0) return y;
         y[0] = x[0];
-        const a = this.config.preEmphasisAlpha;
+        const a = 0.95;
         for (let i = 1; i < x.length; i++) y[i] = x[i] - a * x[i - 1];
         return y;
     }
 
     // =========================================
-    // Main audio pipeline
+    // 🧠 Shared Inference Pipeline (The Core Fix)
     // =========================================
 
-    handleIncomingAudio(chunk: Float32Array) {
-        const now = Date.now();
-        const rms = this.calculateRms(chunk);
+    private async runInferencePipeline(signal: Float32Array, log: boolean = false): Promise<number[]> {
+        // 1. RMS Normalization
+        let processed = signal;
+        if (this.flags.rmsNormalize) {
+            const n = this.normalizeSignal(processed);
+            processed = n.y;
+            if (log) console.log(`🎚️ Gain:${n.gain.toFixed(2)}x (RMS:${n.rms.toFixed(4)})`);
+        }
 
-        // 1) Adaptive noise floor update (only when "quiet-ish")
+        // 2. Pre-emphasis
+        if (this.flags.preEmphasis) {
+            processed = this.applyPreEmphasis(processed);
+        }
+
+        // 3. TF.js Execution
+        const prediction = tf.tidy(() => {
+            // A. Feature Extraction
+            const input = customExtractor.extractFullClip(processed, {cmvn: this.flags.cmvn});
+
+            // 📊 DEBUG: Raw Feature Stats
+            if (log) {
+                const {mean, variance} = tf.moments(input);
+                console.log(`📊 RAW Features: Mean=${mean.dataSync()[0].toFixed(2)} | Std=${Math.sqrt(variance.dataSync()[0]).toFixed(2)}`);
+            }
+
+            const batch = input.expandDims(0);
+
+            // B. Normalization (ALWAYS Apply this!)
+            const mean = Number.isFinite(this.normalization.mean) ? this.normalization.mean : -0.77;
+            const stdRaw = Number.isFinite(this.normalization.std) ? this.normalization.std : 5.20;
+            const std = Math.max(stdRaw, 1e-6);
+            const normalized = batch.sub(mean).div(std);
+
+            // 🧠 DEBUG: Model Input Stats (Should be ~0.0 and ~1.0)
+            if (log) {
+                const {mean: m, variance: v} = tf.moments(normalized);
+                console.log(`🧠 MODEL INPUT: Mean=${m.dataSync()[0].toFixed(2)} | Std=${Math.sqrt(v.dataSync()[0]).toFixed(2)}`);
+            }
+
+            return this.model!.predict(normalized) as tf.Tensor;
+        });
+
+        const probs = Array.from(await prediction.data());
+        prediction.dispose();
+        return probs;
+    }
+
+    // =========================================
+    // Live Audio Handling
+    // =========================================
+
+    handleIncomingAudio(rawChunk: Float32Array) {
+        // ✅ Only log if debug mode is active
+        if (this.isDebug && this.debug.lastRateLogTime === 0) {
+            console.log(`📦 chunkLen=${rawChunk.length} (expect ~4096 @16k)`);
+            this.debug.lastRateLogTime = 1;
+        }
+
+        // 🛑 TRUST WORKLET: It delivers 16k
+        const chunk16k = rawChunk;
+
+        // 🛑 PARITY: Filter only for GATE, not for FEATURES
+        if (!this.gateScratch || this.gateScratch.length !== chunk16k.length) {
+            this.gateScratch = new Float32Array(chunk16k.length);
+        }
+        this.gateScratch.set(chunk16k);
+        this.applyHighPassInPlace(this.gateScratch);
+
+        const now = Date.now();
+        const rms = this.calculateRms(this.gateScratch);
+
+        // Adaptive Noise Floor
         if (rms < this.gate.noiseFloor * 1.5) {
-            const a = this.config.noiseAdaptAlpha; // e.g. 0.005
+            const a = this.config.noiseAdaptAlpha;
             this.gate.noiseFloor = (1 - a) * this.gate.noiseFloor + a * rms;
         }
 
-        // 2) Two-threshold voice gate (hysteresis)
         const gateOn = Math.max(this.config.silenceThreshold, this.gate.noiseFloor * this.config.snrOn);
         const gateOff = Math.max(this.config.silenceThreshold * 0.7, this.gate.noiseFloor * this.config.snrOff);
 
-        // Throttled debug log
-        if (now - this.debug.lastGateLogTime > 1000) {
-            console.log(
-                `🎤 RMS:${rms.toFixed(4)} on:${gateOn.toFixed(4)} off:${gateOff.toFixed(4)} noise:${this.gate.noiseFloor.toFixed(4)} voiced:${this.gate.isVoiced}`
-            );
+        // ✅ Only log if debug mode is active
+        if (this.isDebug && now - this.debug.lastGateLogTime > 2000) {
+            console.log(`🎤 RMS:${rms.toFixed(4)} Gate:${gateOn.toFixed(4)} Noise:${this.gate.noiseFloor.toFixed(4)}`);
             this.debug.lastGateLogTime = now;
         }
 
-        // 3) Gate state machine
+        // Gate Logic
         if (!this.gate.isVoiced) {
-            // Require stronger gate to start voicing
             if (rms < gateOn) {
                 this.gate.silenceCounter++;
-
-                // Prolonged silence: emit idle + internal reset (NO double-dispatch)
                 if (this.gate.silenceCounter > 25) {
                     this.emitIdle();
                     this.resetState();
                 }
-
-                this.debug.skipped++;
                 return;
             }
-
-            // Enter voiced
             this.gate.isVoiced = true;
             this.gate.hangCounter = this.config.voicedHangMax;
         } else {
-            // Already voiced: allow dips (hangover)
             if (rms < gateOff) {
                 this.gate.hangCounter--;
                 if (this.gate.hangCounter <= 0) {
                     this.gate.isVoiced = false;
                     this.gate.silenceCounter++;
                 }
-                this.debug.skipped++;
                 return;
             } else {
-                // Refresh hang window
                 this.gate.hangCounter = this.config.voicedHangMax;
             }
         }
 
-        // 4) Accept chunk
         this.gate.silenceCounter = 0;
         this.debug.written++;
 
-        // Write raw chunk (recommended) — normalization happens on full window in predict()
-        this.buffer.write(chunk);
+        // 🛑 PARITY: Write RAW 16k to buffer (Unfiltered)
+        this.buffer.write(chunk16k);
 
-        // 5) Trigger prediction: never overlap, throttle in time
+        // Trigger Prediction
         if (this.buffer.isFull && !this.state.isPredicting) {
             if (now - this.state.lastPredictionTime > this.config.predictionIntervalMs) {
                 this.state.lastPredictionTime = now;
                 void this.predict();
             }
-        }
-
-        // Debug rates
-        if (now - this.debug.lastRateLogTime > 1000) {
-            console.log(`🧪 buffer writes/sec=${this.debug.written} skipped/sec=${this.debug.skipped}`);
-            this.debug.written = 0;
-            this.debug.skipped = 0;
-            this.debug.lastRateLogTime = now;
         }
     }
 
@@ -368,149 +425,56 @@ class InferenceEngine {
         this.state.isPredicting = true;
 
         try {
-            // Yield so UI can paint before heavy work
             await new Promise<void>(r => requestAnimationFrame(() => r()));
+            const signal = this.buffer.read();
 
-            // A) Acquire signal window
-            let signal = this.buffer.read();
+            // ✅ CALL SHARED PIPELINE (Log enabled only if debug=1)
+            const probs = await this.runInferencePipeline(signal, this.isDebug);
 
-            // B) Preprocessing (window-level only)
-            if (this.flags.rmsNormalize) {
-                const n = this.normalizeSignal(signal);
-                signal = n.y;
-
-                // If this is too spammy, throttle it like top3 logs
-                console.log(`🎚️ RMSNorm gain=${n.gain.toFixed(2)} rms=${n.rms.toFixed(4)}`);
-            }
-
-            const featSignal = this.flags.preEmphasis ? this.applyPreEmphasis(signal) : signal;
-
-            // C) Inference
-            const prediction = tf.tidy(() => {
-                const input = customExtractor.extractFullClip(featSignal, {cmvn: this.flags.cmvn});
-                const batch = input.expandDims(0);
-
-                if (this.flags.cmvn) {
-                    return this.model!.predict(batch) as tf.Tensor;
-                }
-
-                const mean = this.normalization.mean ?? -0.77;
-                const std = this.normalization.std ?? 5.20;
-                return this.model!.predict(batch.sub(mean).div(std)) as tf.Tensor;
-            });
-
-            const probs = Array.from(await prediction.data());
-            prediction.dispose();
-
-            // 🚨 Must await to avoid overlap bugs
             await this.handlePredictionResult(probs);
         } finally {
             this.state.isPredicting = false;
         }
     }
 
-    /**
-     * Process raw probabilities -> smoothed + stable winner -> throttled UI dispatch.
-     */
     private async handlePredictionResult(probs: number[]) {
-        // 1) Smooth (rolling average)
-        this.state.recentScores.push(probs);
-        if (this.state.recentScores.length > this.config.smoothingFrames) this.state.recentScores.shift();
-
-        const avg = new Array(probs.length).fill(0);
-        for (const s of this.state.recentScores) {
-            for (let i = 0; i < s.length; i++) avg[i] += s[i];
-        }
-        for (let i = 0; i < avg.length; i++) avg[i] /= this.state.recentScores.length;
-
-        // 2) Stats + top matches
-        const ent = this.entropyNormalized(avg);
-        const topMatches = this.getTop3(avg);
-
-        // 3) Throttled top logs
         const now = Date.now();
-        if (now - this.debug.topLogLast > this.debug.topLogInterval) {
-            this.debug.topLogLast = now;
-            const fmt = (m?: QariMatch) => (m ? `${m.name}:${(m.score * 100).toFixed(1)}%` : '-');
-            console.log(`🏆 TOP3 | ent=${ent.toFixed(3)} | ${fmt(topMatches[0])} | ${fmt(topMatches[1])} | ${fmt(topMatches[2])}`);
+        const d = this.decideWinnerFromProbs(probs);
+
+        if (this.isDebug) {
+            console.log(`🧮 top1=${d.top1.name}:${(d.top1.score * 100).toFixed(1)}% diff=${d.diff.toFixed(3)} ratio=${d.ratio.toFixed(2)} ent=${d.ent.toFixed(3)}`);
         }
 
-        // 4) Decision logic
-        const top1 = topMatches[0] ?? {name: STATE_IDLE, score: 0};
-        const top2 = topMatches[1];
-
-        const ratio = top2?.score ? top1.score / top2.score : Infinity;
-        const diff = top2 ? top1.score - top2.score : top1.score;
-
-        // Decision gates (tune as needed)
-        const notConfused = ent < 0.75;
-        const strongTop1 = top1.score > 0.45;
-        const clearWin = ratio > 1.25 && diff > 0.08;
-
-        let winner: QariMatch = {name: STATE_IDLE, score: 0};
-
-        if (notConfused && strongTop1 && clearWin) {
-            if (this.state.pendingWinner === top1.name) {
-                this.state.pendingCount++;
-            } else {
-                this.state.pendingWinner = top1.name;
-                this.state.pendingCount = 1;
-            }
-
-            if (this.state.pendingCount >= this.config.stabilityThreshold) {
-                this.state.stableWinner = top1;
-            }
-
-            // If not stable yet, show “Analyzing…” but carry the current confidence score
-            winner = this.state.stableWinner ?? {name: STATE_IDLE, score: top1.score};
-        } else {
-            // Reset pending streak, keep stable winner if exists
-            this.state.pendingWinner = null;
-            this.state.pendingCount = 0;
-            winner = this.state.stableWinner ?? {name: STATE_IDLE, score: 0};
-        }
-
-        // 5) Yield again so compute + dispatch don’t fight the frame
         await new Promise<void>(r => requestAnimationFrame(() => r()));
 
-        // 6) Throttled dispatch: winner change OR minimum interval
-        const winnerChanged = winner.name !== this.state.lastDispatchWinner;
+        const winnerChanged = d.winner.name !== this.state.lastDispatchWinner;
         const enoughTime = now - this.state.lastDispatchTime > this.config.dispatchMinIntervalMs;
 
         if (winnerChanged || enoughTime) {
-            this.state.lastDispatchWinner = winner.name;
+            this.state.lastDispatchWinner = d.winner.name;
             this.state.lastDispatchTime = now;
-
-            window.dispatchEvent(
-                new CustomEvent(EVENTS.RESULT_FOUND, {
-                    detail: {
-                        winner,
-                        others: topMatches.filter(m => m.score > 0.05),
-                    },
-                })
-            );
+            window.dispatchEvent(new CustomEvent(EVENTS.RESULT_FOUND, {detail: {winner: d.winner, others: d.others}}));
         }
     }
 
     // =========================================
-    // File testing / debug
+    // Offline / File Test
     // =========================================
 
     public async predictFromSignal(
         signal16k: Float32Array,
-        opts?: { startSec?: number; windowSec?: number; dispatchToUI?: boolean; log?: boolean }
+        opts?: { startSec?: number; windowSec?: number; dispatchToUI?: boolean; log?: boolean; independent?: boolean }
     ) {
-        if (!this.model) throw new Error('Model not loaded. Call inferenceEngine.setup() first.');
+        if (!this.model) throw new Error('Model not loaded.');
 
         const sr = 16000;
         const windowSec = opts?.windowSec ?? 3;
         const win = Math.max(1, Math.floor(windowSec * sr));
-
         const startSec = Math.max(0, opts?.startSec ?? 0);
         const start = Math.floor(startSec * sr);
 
         // Windowing
-        let windowed = new Float32Array(win);
+        const windowed = new Float32Array(win);
         if (signal16k.length >= win) {
             const sliceStart = Math.min(start, Math.max(0, signal16k.length - win));
             windowed.set(signal16k.subarray(sliceStart, sliceStart + win));
@@ -518,79 +482,73 @@ class InferenceEngine {
             windowed.set(signal16k);
         }
 
-        // Same preprocessing as live
-        if (this.flags.rmsNormalize) {
-            const n = this.normalizeSignal(windowed);
-            windowed = n.y as any;
-            console.log(`🎚️ RMSNorm gain=${n.gain.toFixed(2)} rms=${n.rms.toFixed(4)}`);
+        if (opts?.log) {
+            console.log(`🧱 windowed.length=${windowed.length} (expected ${win})`);
         }
 
-        const featSignal = this.flags.preEmphasis ? this.applyPreEmphasis(windowed) : windowed;
+        // Run model
+        const probs = await this.runInferencePipeline(windowed, opts?.log ?? false);
 
-        const prediction = tf.tidy(() => {
-            const input = customExtractor.extractFullClip(featSignal, {cmvn: this.flags.cmvn});
-            const batch = input.expandDims(0);
-
-            if (this.flags.cmvn) return this.model!.predict(batch) as tf.Tensor;
-
-            const mean = this.normalization.mean ?? -0.77;
-            const std = this.normalization.std ?? 5.20;
-            return this.model!.predict(batch.sub(mean).div(std)) as tf.Tensor;
-        });
-
-        const probs = Array.from(await prediction.data());
-        prediction.dispose();
-
-        const ent = this.entropyNormalized(probs);
-        const top3 = this.getTop3(probs);
-        const top1 = top3[0] ?? {name: STATE_IDLE, score: 0};
+        // 1) RAW diagnostics (no smoothing / no stability)
+        const raw = this.analyzeRawProbs(probs);
 
         if (opts?.log) {
             console.log(
-                `🏁 FILETEST | start=${startSec.toFixed(2)}s ent=${ent.toFixed(3)} | ` +
-                top3.map(x => `${x.name}:${(x.score * 100).toFixed(1)}%`).join(' | ')
+                `🏁 FILETEST RAW | ${raw.top3.map(x => `${x.name}:${(x.score * 100).toFixed(0)}%`).join(' ')}`
+            );
+            console.log(
+                `🧮 RAW top1=${raw.top1.name}:${(raw.top1.score * 100).toFixed(1)}% ` +
+                `top2=${raw.top2?.name ?? "-"}:${((raw.top2?.score ?? 0) * 100).toFixed(1)}% ` +
+                `diff=${raw.diff.toFixed(3)} ratio=${raw.ratio.toFixed(2)} ent=${raw.ent.toFixed(3)}`
             );
         }
 
+        // 2) DECISION (same logic as live)
+        // independent=true means each file window is treated like a fresh clip
+        const independent = opts?.independent ?? true;
+        if (independent) {
+            this.state.recentScores = [];
+            this.state.pendingWinner = null;
+            this.state.pendingCount = 0;
+            this.state.stableWinner = null;
+            this.state.noWinCount = 0;
+        }
+
+        const decision = this.decideWinnerFromProbs(probs);
+
+        if (opts?.log) {
+            console.log(
+                `✅ DECISION | winner=${decision.winner.name}:${(decision.winner.score * 100).toFixed(1)}% ` +
+                `diff=${decision.diff.toFixed(3)} ratio=${decision.ratio.toFixed(2)} ent=${decision.ent.toFixed(3)}`
+            );
+        }
+
+        // 3) Dispatch DECISION winner (not raw top1)
         if (opts?.dispatchToUI) {
             window.dispatchEvent(
                 new CustomEvent(EVENTS.RESULT_FOUND, {
-                    detail: {winner: top1, others: top3},
+                    detail: {winner: decision.winner, others: decision.others},
                 })
             );
         }
 
-        return {top1, top3, ent, probs};
+        // Return both so debug tools can choose
+        return {probs, raw, decision};
     }
-
-    // =========================================
-    // Event helpers
-    // =========================================
 
     private emitIdle() {
         requestAnimationFrame(() => {
             window.dispatchEvent(
                 new CustomEvent(EVENTS.RESULT_FOUND, {
-                    detail: {
-                        winner: {name: STATE_IDLE, score: 0},
-                        others: [],
-                    },
+                    detail: {winner: {name: STATE_IDLE, score: 0}, others: []},
                 })
             );
         });
     }
 
-    // =========================================
-    // Math / selection helpers
-    // =========================================
-
-    /**
-     * Top-3 selection without full sort (O(N)).
-     */
     private getTop3(probs: number[]) {
         let i1 = -1, i2 = -1, i3 = -1;
         let s1 = -1, s2 = -1, s3 = -1;
-
         for (let i = 0; i < probs.length; i++) {
             const p = probs[i];
             if (p > s1) {
@@ -610,7 +568,6 @@ class InferenceEngine {
                 i3 = i;
             }
         }
-
         const result: QariMatch[] = [];
         if (i1 !== -1) result.push({name: this.formatName(this.labels[i1]), score: s1});
         if (i2 !== -1) result.push({name: this.formatName(this.labels[i2]), score: s2});
@@ -622,13 +579,9 @@ class InferenceEngine {
         return raw ? raw.replace(/_/g, ' ').toUpperCase() : 'UNKNOWN';
     }
 
-    /**
-     * Normalized entropy in [0..1], robust across different class counts.
-     */
     private entropyNormalized(probs: number[]): number {
         const N = probs.length;
         if (N <= 1) return 0;
-
         let e = 0;
         for (const p of probs) {
             if (p > 0) e -= p * Math.log(p);
@@ -636,43 +589,86 @@ class InferenceEngine {
         return e / Math.log(N);
     }
 
-    /**
-     * Installs hotkeys for inference toggles (Shift + N/E/C).
-     * @param onAction Callback to run when a toggle changes (receives status message for UI)
-     * @returns Cleanup function to remove listeners
-     */
-    public installHotkeys(onAction: (status: string) => void): () => void {
-        const handler = (e: KeyboardEvent) => {
-            // Ignore if typing in an input
-            const target = e.target as HTMLElement | null;
-            if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable) return;
+    private decideWinnerFromProbs(probs: number[]) {
+        this.state.recentScores.push(probs);
+        if (this.state.recentScores.length > this.config.smoothingFrames) this.state.recentScores.shift();
 
-            if (!e.shiftKey) return;
+        // avg
+        const avg = new Array(probs.length).fill(0);
+        for (const s of this.state.recentScores) for (let i = 0; i < s.length; i++) avg[i] += s[i];
+        for (let i = 0; i < avg.length; i++) avg[i] /= this.state.recentScores.length;
 
-            const key = e.key.toLowerCase();
-            let msg = "";
+        const ent = this.entropyNormalized(avg);
+        const topMatches = this.getTop3(avg);
 
-            if (key === 'n') {
-                this.toggleRmsNormalize();
-                msg = this.isRmsNormalizeEnabled() ? "RmsNormalize: ON" : "RmsNormalize: OFF";
-            } else if (key === 'e') {
-                this.togglePreEmphasis();
-                msg = this.isPreEmphasisEnabled() ? "PreEmphasis: ON" : "PreEmphasis: OFF";
-            } else if (key === 'c') {
-                this.toggleCMVN();
-                msg = this.isCmvnEnabled() ? "CMVN: ON" : "CMVN: OFF";
+        const now = Date.now();
+        if (this.isDebug && now - this.debug.topLogLast > this.debug.topLogInterval) {
+            this.debug.topLogLast = now;
+            const fmt = (m?: QariMatch) => (m ? `${m.name}:${(m.score * 100).toFixed(0)}%` : '-');
+            console.log(`🏆 TOP3 [Ent:${ent.toFixed(2)}] | ${fmt(topMatches[0])} | ${fmt(topMatches[1])} | ${fmt(topMatches[2])}`);
+        }
+
+        const top1 = topMatches[0] ?? {name: STATE_IDLE, score: 0};
+        const top2 = topMatches[1];
+
+        const ratio = top2?.score ? top1.score / top2.score : Infinity;
+        const diff = top2 ? top1.score - top2.score : top1.score;
+
+        if (this.isDebug) {
+            const t1 = top1?.score ?? 0;
+            const t2 = top2?.score ?? 0;
+            const ratio = t2 > 0 ? t1 / t2 : Infinity;
+            const diff = t2 > 0 ? t1 - t2 : t1;
+            console.log(
+                `🧮 top1=${top1?.name}:${(t1 * 100).toFixed(1)}% ` +
+                `top2=${top2?.name ?? "-"}:${(t2 * 100).toFixed(1)}% ` +
+                `diff=${diff.toFixed(3)} ratio=${ratio.toFixed(2)}`
+            );
+        }
+
+        // TEMP: allow high entropy while model is underconfident
+        const notConfused = ent < 0.95;
+        const strongTop1 = top1.score > this.acceptTop1Min;
+        const clearWin = ratio > 1.35 && diff > 0.04;
+
+        let winner: QariMatch = {name: STATE_IDLE, score: 0};
+
+        if (notConfused && strongTop1 && clearWin) {
+            this.state.noWinCount = 0;
+            if (this.state.pendingWinner === top1.name) this.state.pendingCount++;
+            else {
+                this.state.pendingWinner = top1.name;
+                this.state.pendingCount = 1;
             }
 
-            if (msg) {
-                console.log(`🧪 ${msg}`);
-                onAction(msg);
+            if (this.state.pendingCount >= this.config.stabilityThreshold) this.state.stableWinner = top1;
+
+            // IMPORTANT: show candidate if not yet stable
+            winner = this.state.stableWinner ?? top1;
+        } else {
+            this.state.pendingWinner = null;
+            this.state.pendingCount = 0;
+            this.state.noWinCount++;
+            if (this.state.noWinCount >= 4) {
+                this.state.stableWinner = null;
+                this.state.noWinCount = 0;
             }
-        };
+            winner = this.state.stableWinner ?? {name: STATE_IDLE, score: 0};
+        }
 
-        window.addEventListener('keydown', handler);
-        console.log("🧪 Inference Hotkeys Installed: Shift + [N]ormalize, [E]mphasis, [C]MVN");
+        return {winner, others: topMatches.filter(m => m.score > 0.05), ent, top1, top2, diff, ratio};
+    }
 
-        return () => window.removeEventListener('keydown', handler);
+    private analyzeRawProbs(probs: number[]) {
+        const ent = this.entropyNormalized(probs);
+        const top3 = this.getTop3(probs);
+        const top1 = top3[0] ?? {name: STATE_IDLE, score: 0};
+        const top2 = top3[1];
+
+        const ratio = top2?.score ? top1.score / top2.score : Infinity;
+        const diff = top2 ? top1.score - top2.score : top1.score;
+
+        return {ent, top1, top2, top3, diff, ratio};
     }
 }
 

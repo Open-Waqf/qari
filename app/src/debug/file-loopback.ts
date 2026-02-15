@@ -28,10 +28,9 @@ function concatChunks(chunks: Float32Array[]): Float32Array {
 }
 
 export async function runFileLoopback(file: File) {
-
     await inferenceEngine.setup();
 
-    // Force 48k context so your FIR decimate-by-3 path is exercised
+    // 1. Force 48k context to simulate the live environment mismatch
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     const ctx = new AudioContextClass({sampleRate: 48000});
 
@@ -47,12 +46,22 @@ export async function runFileLoopback(file: File) {
     const chunks: Float32Array[] = [];
     worklet.port.onmessage = (e) => chunks.push(e.data as Float32Array);
 
+    let first = true;
+    worklet.port.onmessage = (e) => {
+        const c = e.data as Float32Array;
+        if (first) {
+            first = false;
+            console.log("🔎 first chunk len=", c.length);
+        }
+        chunks.push(c);
+    };
+
     const mute = ctx.createGain();
     mute.gain.value = 0;
 
     src.connect(worklet).connect(mute).connect(ctx.destination);
 
-    console.log(`🔁 LOOPBACK start: "${file.name}" ctxSR=${ctx.sampleRate}, bufSR=${monoBuf.sampleRate}`);
+    console.log(`🔁 LOOPBACK start: "${file.name}" ctxSR=${ctx.sampleRate} (Simulating Live 48k)`);
     src.start();
 
     await new Promise<void>((resolve) => {
@@ -62,8 +71,18 @@ export async function runFileLoopback(file: File) {
 
     await ctx.close();
 
-    const sig16k = concatChunks(chunks);
-    console.log(`🔁 LOOPBACK collected ${(sig16k.length / 16000).toFixed(2)}s @16k, chunks=${chunks.length}`);
+    // 2. Collect the Raw Output (Now 48k because worklet is passthrough)
+    const rawSignal = concatChunks(chunks);
+    console.log(`🔁 Raw Collected: ${rawSignal.length} samples (Rate: ${ctx.sampleRate})`);
+
+    // 3. DOWNSAMPLE (The Fix!)
+    // We must manually convert 48k -> 16k, just like the live engine does.
+    const sig16k = rawSignal;
+
+    console.log(`✅ worklet output dur=${(sig16k.length / 16000).toFixed(2)}s @16k`);
+    await runMicCapTest(sig16k);
+
+    console.log(`📉 Downsampled to: ${sig16k.length} samples @ 16k`);
 
     await runMicCapTest(sig16k);
     console.log("✅ LOOPBACK done.");

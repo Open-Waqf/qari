@@ -12,3 +12,5 @@ tensorflowjs==4.17.0
 packaging
 six
 typing-extensions
+
+audiomentations

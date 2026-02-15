@@ -3,123 +3,156 @@ import os
 
 import librosa
 import numpy as np
+from audiomentations import Compose, AddGaussianNoise, HighPassFilter, LowPassFilter, Gain
 
 # Settings
 SR = 16000
-DURATION = 3.0  # We train on 3-second chunks
-SAMPLES_PER_CHUNK = int(SR * DURATION)
-DATA_PATH = "audio/"  # Point this to your manhuw audio folder
+DURATION = 3.0
+SAMPLES_PER_CHUNK = int(SR * DURATION)  # 48000 samples
+DATA_PATH = "audio/"
 OUTPUT_PATH = "features.npz"
+
+# --- 1. DEFINE THE "BAD MIC" SIMULATOR ---
+augment = Compose([
+    # Use "min_gain_db" for newer audiomentations versions
+    Gain(min_gain_db=-15.0, max_gain_db=5.0, p=1.0),
+    AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.5),
+    HighPassFilter(min_cutoff_freq=50, max_cutoff_freq=200, p=0.5),
+    LowPassFilter(min_cutoff_freq=3500, max_cutoff_freq=7500, p=0.5),
+])
 
 
 def load_matrices():
-    # Load the verified physics
     with open("../app/public/models/audio_config.json", "r") as f:
         config = json.load(f)
     return {
-        "dft_real": np.array(config["dft_real"]),
-        "dft_imag": np.array(config["dft_imag"]),
-        "mel_basis": np.array(config["mel_basis"]),
-        "dct_matrix": np.array(config["dct_matrix"]),
-        "window": np.array(config["window"])
+        "dft_real": np.array(config["dft_real"], dtype=np.float32),
+        "dft_imag": np.array(config["dft_imag"], dtype=np.float32),
+        "mel_basis": np.array(config["mel_basis"], dtype=np.float32),
+        "dct_matrix": np.array(config["dct_matrix"], dtype=np.float32),
+        "window": np.array(config["window"], dtype=np.float32),
     }
 
 
 MATRICES = load_matrices()
 
 
-def extract_features_matrix(signal):
-    # This function mimics the App's "CustomAudioExtractor" exactly
-
-    # 1. Window
-    windowed = signal * MATRICES["window"]
-
-    # 2. FFT
+def extract_features_matrix(frame_512: np.ndarray) -> np.ndarray:
+    # frame_512 is exactly 512 samples
+    windowed = frame_512 * MATRICES["window"]
     real = MATRICES["dft_real"] @ windowed
     imag = MATRICES["dft_imag"] @ windowed
     mag = np.sqrt(real ** 2 + imag ** 2)
-
-    # 3. Mel
     mel = MATRICES["mel_basis"] @ mag
 
-    # 4. Log
+    # Match app epsilon
     log_mel = np.log(mel + 1e-6)
-
-    # 5. DCT
     mfcc = MATRICES["dct_matrix"] @ log_mel
     return mfcc
 
 
+def _mfcc_image_from_chunk(chunk_48k: np.ndarray) -> np.ndarray:
+    # chunk_48k: (48000,)
+    frames = librosa.util.frame(chunk_48k, frame_length=512, hop_length=256).T  # (186, 512)
+    mfccs = [extract_features_matrix(f) for f in frames]  # list of (40,)
+    img = np.array(mfccs, dtype=np.float32).T  # (40, 186)
+
+    # Guardrail (should always be true)
+    if img.shape != (40, 186):
+        raise ValueError(f"Bad MFCC shape: {img.shape} (expected (40, 186))")
+
+    return img
+
+
 def process_dataset():
-    X = []  # Features
-    y = []  # Labels (Reciter IDs)
-    groups = []
+    X, y, groups = [], [], []
 
-    reciters = sorted([d for d in os.listdir(DATA_PATH) if os.path.isdir(os.path.join(DATA_PATH, d))])
+    reciters = sorted(
+        d for d in os.listdir(DATA_PATH)
+        if os.path.isdir(os.path.join(DATA_PATH, d)) and not d.startswith(".")
+    )
     print(f"Found {len(reciters)} reciters: {reciters}")
-
     label_map = {name: i for i, name in enumerate(reciters)}
 
     file_counter = 0
+    step = SAMPLES_PER_CHUNK // 2  # 50% overlap
+
     for reciter in reciters:
         print(f"Processing {reciter}...")
         reciter_path = os.path.join(DATA_PATH, reciter)
-        files = sorted(os.listdir(reciter_path))
+        files = sorted(f for f in os.listdir(reciter_path) if not f.startswith("."))
 
         for file in files:
-            if not file.endswith((".mp3", ".wav")): continue
+            if not file.lower().endswith((".mp3", ".wav")):
+                continue
 
-            # Load Audio
             file_path = os.path.join(reciter_path, file)
+
             try:
-                audio, _ = librosa.load(file_path, sr=SR)
+                # Explicit decode behavior (more stable)
+                audio, _ = librosa.load(
+                    file_path, sr=SR, mono=True, res_type="soxr_hq"
+                )
+                audio = audio.astype(np.float32, copy=False)
             except Exception as e:
                 print(f"Error loading {file}: {e}")
                 continue
 
-            # Split into 3-second chunks (with 50% overlap)
-            step = SAMPLES_PER_CHUNK // 2
-            for start in range(0, len(audio) - SAMPLES_PER_CHUNK, step):
-                chunk = audio[start: start + SAMPLES_PER_CHUNK]
+            # ✅ FIX: include last valid start (+1)
+            last_start = len(audio) - SAMPLES_PER_CHUNK
+            if last_start < 0:
+                file_counter += 1
+                continue
 
-                # 1. NEW: Calculate Volume (RMS)
-                rms = np.sqrt(np.mean(chunk ** 2))
+            for start in range(0, last_start + 1, step):
+                chunk = audio[start:start + SAMPLES_PER_CHUNK]
+                if chunk.shape[0] != SAMPLES_PER_CHUNK:
+                    continue
 
-                # 2. Skip if too quiet (Threshold ~0.01 is usually good for normalized audio)
+                # RMS Check (unchanged)
+                rms = float(np.sqrt(np.mean(chunk ** 2)))
                 if rms < 0.01:
                     continue
 
-                # We need to process this chunk frame-by-frame
-                # The App processes 512 samples at a time
-                # 3 seconds * 16000 = 48000 samples
-                # 48000 / 256 (hop) = ~187 frames
+                try:
+                    # Clean
+                    clean_entry = _mfcc_image_from_chunk(chunk)
 
-                # Standard Librosa sliding window logic, but using OUR matrix math
-                # To speed up training, we can use a trick:
-                # We know our matrix math is linear. We can use librosa's frame utility
-                frames = librosa.util.frame(chunk, frame_length=512, hop_length=256).T
+                    # Dirty (keep exact length)
+                    dirty_chunk = augment(samples=chunk, sample_rate=SR).astype(np.float32, copy=False)
+                    if len(dirty_chunk) > SAMPLES_PER_CHUNK:
+                        dirty_chunk = dirty_chunk[:SAMPLES_PER_CHUNK]
+                    elif len(dirty_chunk) < SAMPLES_PER_CHUNK:
+                        dirty_chunk = np.pad(
+                            dirty_chunk, (0, SAMPLES_PER_CHUNK - len(dirty_chunk))
+                        ).astype(np.float32, copy=False)
 
-                # Apply our Matrix Math to every frame
-                # (We do this in a loop or vectorized. Loop is clearer for now)
-                chunk_mfccs = []
-                for frame in frames:
-                    mfcc = extract_features_matrix(frame)
-                    chunk_mfccs.append(mfcc)
+                    dirty_entry = _mfcc_image_from_chunk(dirty_chunk)
 
-                chunk_mfccs = np.array(chunk_mfccs)  # Shape: [Time, 40]
+                    # Append only if both succeeded (unchanged behavior)
+                    X.append(clean_entry)
+                    y.append(label_map[reciter])
+                    groups.append(file_counter)
 
-                # Transpose to [40, Time] to match standard Image shape (Height, Width)
-                X.append(chunk_mfccs.T)
-                y.append(label_map[reciter])
-                groups.append(file_counter)
+                    X.append(dirty_entry)
+                    y.append(label_map[reciter])
+                    groups.append(file_counter)
+
+                except Exception as e:
+                    print(f"⚠️ Augmentation failed, skipping chunk pair: {e}")
+                    continue
 
             file_counter += 1
 
-    X = np.array(X)
-    y = np.array(y)
-    groups = np.array(groups)
+    X = np.array(X, dtype=np.float32)
+    y = np.array(y, dtype=np.int64)
+    groups = np.array(groups, dtype=np.int64)
 
-    print(f"✅ Dataset Ready. Shape: {X.shape}")
+    # Pairing sanity check for training normalization logic (X[::2] clean)
+    if X.shape[0] % 2 != 0:
+        raise RuntimeError(f"Expected even number of samples (clean/dirty pairs). Got {X.shape[0]}.")
+
+    print(f"✅ Dataset Ready. Shape: {X.shape} (Includes Clean + Augmented)")
     np.savez(OUTPUT_PATH, X=X, y=y, groups=groups, mapping=label_map)
     print(f"Saved to {OUTPUT_PATH}")
 
