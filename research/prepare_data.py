@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 import librosa
 import numpy as np
@@ -11,6 +12,8 @@ DURATION = 3.0
 SAMPLES_PER_CHUNK = int(SR * DURATION)  # 48000 samples
 DATA_PATH = "datasets/audio"
 OUTPUT_PATH = "datasets/features.npz"
+APP_MODELS_DIR = Path("../app/public/models")
+RECITERS_MAP_PATH = APP_MODELS_DIR / "reciters_map.json"
 
 # --- 1. DEFINE THE "BAD MIC" SIMULATOR ---
 augment = Compose([
@@ -28,6 +31,51 @@ augment = Compose([
     # 🛑 CRITICAL: Do not go below 6000Hz, or Ghamdi will sound muffled
     LowPassFilter(min_cutoff_freq=6000, max_cutoff_freq=7800, p=0.3),
 ])
+
+
+def load_or_update_reciters_map(data_path: str) -> list[str]:
+    # folders present on disk
+    found = sorted(
+        d for d in os.listdir(data_path)
+        if os.path.isdir(os.path.join(data_path, d)) and not d.startswith(".")
+    )
+
+    # load existing ordering if present (this preserves indices)
+    if RECITERS_MAP_PATH.exists():
+        with open(RECITERS_MAP_PATH, "r", encoding="utf-8") as f:
+            existing = json.load(f)  # should be a LIST of class names
+        if not isinstance(existing, list):
+            raise ValueError("reciters_map.json must be a JSON list of class names in index order.")
+        final = list(existing)
+    else:
+        existing = []
+        final = []
+        # fresh repo case: still put _background at the end if it exists
+        if "_background" in found:
+            found = [x for x in found if x != "_background"] + ["_background"]
+        final = list(found)
+
+    # append new folders at end (keeps old indices intact)
+    changed = False
+    for name in found:
+        if name not in final:
+            final.append(name)
+            changed = True
+            print(f"➕ New class appended: {name} -> index {len(final) - 1}")
+
+    # warn if something in JSON missing on disk (do not reorder!)
+    for name in existing:
+        if name not in found:
+            print(f"⚠️ In reciters_map.json but missing folder in audio/: {name}")
+
+    # write back only if needed
+    if changed or not RECITERS_MAP_PATH.exists():
+        RECITERS_MAP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(RECITERS_MAP_PATH, "w", encoding="utf-8") as f:
+            json.dump(final, f, indent=2)
+        print(f"💾 reciters_map.json updated: {len(final)} classes")
+
+    return final
 
 
 def load_matrices():
@@ -75,11 +123,8 @@ def _mfcc_image_from_chunk(chunk_48k: np.ndarray) -> np.ndarray:
 def process_dataset():
     X, y, groups = [], [], []
 
-    reciters = sorted(
-        d for d in os.listdir(DATA_PATH)
-        if os.path.isdir(os.path.join(DATA_PATH, d)) and not d.startswith(".")
-    )
-    print(f"Found {len(reciters)} reciters: {reciters}")
+    reciters = load_or_update_reciters_map(DATA_PATH)
+    print(f"Locked class order ({len(reciters)}): {reciters}")
     label_map = {name: i for i, name in enumerate(reciters)}
 
     file_counter = 0
@@ -88,6 +133,9 @@ def process_dataset():
     for reciter in reciters:
         print(f"Processing {reciter}...")
         reciter_path = os.path.join(DATA_PATH, reciter)
+        if not os.path.isdir(reciter_path):
+            print(f"⚠️ Missing folder for class '{reciter}'. Expected: {Path(reciter_path).resolve()}")
+            continue
         files = sorted(f for f in os.listdir(reciter_path) if not f.startswith("."))
 
         for file in files:

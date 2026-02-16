@@ -94,6 +94,25 @@ def generate_silence(out_dir: Path, minutes: float, sr: int = 16000):
         sf.write(path, chunk, sr, subtype='PCM_16')
 
 
+# ---------------------------------------------------------
+# 🎯 RELEVANT CATEGORIES (For a Quran App)
+# ---------------------------------------------------------
+# We only want sounds that actually happen while recording recitation.
+RELEVANT_CATEGORIES = {
+    # 🏠 Indoor / Domestic (The most common)
+    'keyboard_typing', 'mouse_click', 'door_wood_knock', 'door_wood_creaks',
+    'clock_tick', 'vacuum_cleaner', 'washing_machine', 'can_opening',
+
+    # 🗣️ Human / Body (Crucial to distinguish from Recitation)
+    'coughing', 'sneezing', 'breathing', 'footsteps', 'laughing',
+    'clapping', 'snoring', 'crying_baby', 'drinking_sipping',
+
+    # 🏙️ Urban / Exterior (For users in cars/street)
+    'car_horn', 'engine', 'train', 'siren', 'wind', 'rain', 'thunderstorm',
+    'crickets', 'chirping_birds'  # Common background in quiet areas
+}
+
+
 def process_esc50(src_dir: Path, out_dir: Path, target_mins: float, clip_sec: float):
     # 1. Load categories
     meta_map = load_esc50_metadata(src_dir)
@@ -101,36 +120,44 @@ def process_esc50(src_dir: Path, out_dir: Path, target_mins: float, clip_sec: fl
     # 2. Find WAVs
     audio_dir = src_dir / "audio"
     if not audio_dir.exists():
-        audio_dir = src_dir  # Fallback to root
+        audio_dir = src_dir
 
     files = list(audio_dir.glob("*.wav"))
     if not files:
         print(f"❌ No .wav files found in {audio_dir}")
         return
 
+    # Shuffle for diversity
     random.shuffle(files)
 
     required_samples = int(target_mins * 60 * 16000)
     current_samples = 0
     count = 0
+    skipped_irrelevant = 0
 
-    print(f"📂 Scanning {len(files)} files in {audio_dir.name}...")
+    print(f"📂 Scanning {len(files)} files for RELEVANT categories...")
 
     for fpath in files:
         if current_samples >= required_samples:
             break
 
+        # --- 🛡️ SMART FILTER ---
+        original_name = fpath.name
+        category = meta_map.get(original_name, "noise")
+
+        # If we know the category, and it's NOT in our list, skip it.
+        if category != "noise" and category not in RELEVANT_CATEGORIES:
+            skipped_irrelevant += 1
+            continue
+        # -----------------------
+
         try:
-            # Load (Librosa handles mono mixdown and 16k resample)
             y, sr = librosa.load(str(fpath), sr=16000, mono=True)
             y_clip = _make_clip(y, 16000, clip_sec)
 
-            # Name Determination
-            original_name = fpath.name
-            category = meta_map.get(original_name, "noise")
             out_name = f"{category}_{fpath.stem}.wav"
 
-            # ✅ EXPLICIT PCM_16
+            # Write PCM_16
             sf.write(out_dir / out_name, y_clip, 16000, subtype='PCM_16')
 
             current_samples += y_clip.size
@@ -138,7 +165,8 @@ def process_esc50(src_dir: Path, out_dir: Path, target_mins: float, clip_sec: fl
         except Exception as e:
             print(f"⚠️ Error reading {fpath.name}: {e}")
 
-    print(f"✅ Extracted {count} clips ({current_samples / 16000 / 60:.2f} mins).")
+    print(f"✅ Extracted {count} relevant clips ({current_samples / 16000 / 60:.2f} mins).")
+    print(f"🗑️ Skipped {skipped_irrelevant} irrelevant files (chainsaws, roosters, etc).")
 
 
 # ---------------------------------------------------------
