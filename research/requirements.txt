@@ -4,6 +4,7 @@ keras==2.15.0
 tf-keras==2.15.0
 numpy==1.26.4
 librosa==0.10.1
+scikit-learn==1.3.2
 
 # The Converter (Pinned to compatible version)
 tensorflowjs==4.17.0
@@ -12,7 +13,5 @@ tensorflowjs==4.17.0
 packaging
 six
 typing-extensions
-
 audiomentations
-
 pydub

@@ -1,0 +1,141 @@
+{
+  "meta": {
+    "root_dir": "audio_test_sets",
+    "suite": "challenge",
+    "model": "qari_model.h5",
+    "audio_config": "../app/public/models/audio_config.json",
+    "reciters_map": "../app/public/models/reciters_map.json",
+    "normalization": "../app/public/models/normalization.json",
+    "baseline_golden": "golden_baseline.json",
+    "baseline_challenge": "challenge_baseline.json",
+    "window_sec": 3.0,
+    "hop_sec": 1.5,
+    "max_windows": 40,
+    "rms_min": 0.003,
+    "update_baseline": true,
+    "strict": false,
+    "no_rms_norm": false,
+    "pre_emph": false,
+    "fail_on_high_conf_error": null
+  },
+  "metrics": {
+    "accuracy": 0.6666666666666666,
+    "macro_f1": 0.6666666666666666,
+    "per_class": {
+      "abdulbasit_abdulsamad": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "abdulrahman_sudais": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 1.0
+      },
+      "ahmed_talib_hameed": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "ali_hudhaify": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "ali_jaber": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "fares_abbad": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "idrees_abkr": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "islam_sobhi": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "maher_al_muaiqly": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "mansour_al_salimi": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "mishary_al_afasy": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1.0
+      },
+      "muhammad_al_lohaidan": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "muhammad_sidiq_mishawi": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "nasser_al_qatami": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "raad_al_kurdi": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "saad_al_ghamdi": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "salman_al_otaibi": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "saud_shuraim": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1.0
+      },
+      "yasser_al_dossary": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      }
+    }
+  }
+}
