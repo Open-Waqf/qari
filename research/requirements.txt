@@ -1,17 +1,21 @@
-# The Core Logic
-tensorflow==2.15.0
-keras==2.15.0
-tf-keras==2.15.0
-numpy==1.26.4
+# --- Core ML ---
+# This installs the latest stable TensorFlow (currently 2.16.x)
+# It automatically includes Keras 3.
+setuptools<81
+tensorflow[and-cuda]
+
+# --- Audio Processing ---
 librosa==0.10.1
+pydub
+audiomentations
 scikit-learn==1.3.2
 
-# The Converter (Pinned to compatible version)
-tensorflowjs==4.17.0
+# --- Utilities ---
+numpy<2.0.0
+# We pin numpy < 2.0 because TF 2.16 still has some warnings with NumPy 2.0
+# ensuring 1.26.x keeps everything stable.
 
-# Helpers
-packaging
-six
-typing-extensions
-audiomentations
-pydub
+# --- Conversion Tools (LOCAL ONLY) ---
+# These will only install on your Windows machine
+tensorflowjs; sys_platform == "win32"
+tf-keras; sys_platform == "win32"

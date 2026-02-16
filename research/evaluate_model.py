@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple
 import librosa
 import numpy as np
 import tensorflow as tf
+from tensorflow import keras
 
 # -----------------------------
 # 🎚️ DEFAULTS
@@ -14,12 +15,13 @@ import tensorflow as tf
 SR = 16000
 WINDOW_SEC_DEFAULT = 3.0
 HOP_SEC_DEFAULT = 1.5
-RMS_MIN_DEFAULT = 0.003  # you tuned this; keep as default
+RMS_MIN_DEFAULT = 0.003
 
 
 # -----------------------------
 # 🧠 MODEL UTILS (Custom Layer)
 # -----------------------------
+@keras.utils.register_keras_serializable()
 class SpecAugment(tf.keras.layers.Layer):
     """Matches train.py custom layer signature. At inference, it's a no-op."""
 
@@ -271,6 +273,7 @@ def evaluate_suite(
     label_to_idx = {name: i for i, name in enumerate(labels)}
     mean, std = load_norm_stats(normalization_path)
 
+    print(f"📦 Loading model: {model_path.name}")
     model = tf.keras.models.load_model(
         str(model_path),
         custom_objects={"SpecAugment": SpecAugment},
@@ -282,7 +285,7 @@ def evaluate_suite(
 
     if not pairs:
         print(f"❌ [{suite_name}] No audio files found in {suite_dir}.")
-        return Metrics(0, 0, {}, []), []
+        return Metrics(0, 0, 0, 0, {}, []), []
 
     y_true: List[int] = []
     y_pred: List[int] = []
@@ -428,10 +431,11 @@ def fail_on_high_conf_errors(results: List[FileResult], threshold: float) -> Tup
 def main():
     p = argparse.ArgumentParser(description="Golden + Challenge Evaluator (No-Regression Gate)")
 
-    p.add_argument("--root_dir", default="datasets/audio_test_sets", help="Root folder containing golden/ and challenge/")
+    p.add_argument("--root_dir", default="datasets/audio_test_sets",
+                   help="Root folder containing golden/ and challenge/")
     p.add_argument("--suite", choices=["golden", "challenge", "both"], default="both")
 
-    p.add_argument("--model", default="models/qari_model.h5")
+    p.add_argument("--model", default="models/qari_model.h5", help="Path to the model to evaluate")
     p.add_argument("--audio_config", default="../app/public/models/audio_config.json")
     p.add_argument("--reciters_map", default="../app/public/models/reciters_map.json")
     p.add_argument("--normalization", default="../app/public/models/normalization.json")

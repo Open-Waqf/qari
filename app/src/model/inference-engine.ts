@@ -52,7 +52,7 @@ class InferenceEngine {
     private static instance: InferenceEngine;
 
     // --- Dependencies ---
-    private model: tf.LayersModel | null = null;
+    private model: tf.GraphModel | null = null;
     private labels: string[] = [];
     private normalization = {mean: 0, std: 1};
     private buffer: RingBuffer;
@@ -195,7 +195,7 @@ class InferenceEngine {
             await forceWasmBackend(this.isDebug);
 
             await customExtractor.loadConfig();
-            this.model = await tf.loadLayersModel('/models/tfjs_model/model.json');
+            this.model = await tf.loadGraphModel('/models/tfjs_model/model.json');
 
             const res = await fetch('/models/reciters_map.json');
             this.labels = await res.json();

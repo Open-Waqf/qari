@@ -1,64 +1,100 @@
 # 🧪 Qari Finder Research Lab
 
-The Python environment for training, evaluating, and converting the Reciter Identification Model.
+The Python research environment for training, evaluating, and converting the **Reciter Identification Model**.
+
+This lab supports two workflows:
+
+1. **☁️ Hybrid (Recommended):** Code locally, Train on Colab (GPU), Sync results back.
+2. **💻 Local Hero:** Run everything on your machine (CPU/GPU).
+
+---
 
 ## 📂 Project Structure
 
-* **`datasets/`**: Contains all heavy data (`audio/`, `audio_test_set/`, `features.npz`). Ignored by Git (except the
-  Golden Set).
-* **`models/`**: Stores trained models (`.h5`) and baselines (`.json`).
-* **`tools/`**: Helper scripts for auditing, physics export, and noise generation.
-* **Root Scripts:** The main pipeline (`prepare_data.py`, `train.py`, `evaluate_model.py`).
+* **`datasets/`**: Contains raw data (`audio/`, `audio_test_set/`, `features.npz`). *Ignored by Git
+  except `audio_test_set/`.*
+* **`models/`**: Stores trained model artifacts (`.h5`, `saved_model/`).
+* **`tools/`**: Helper scripts for syncing, auditing, and physics export.
+* **Root Scripts:** The main pipeline (`prepare_data.py`, `train.py`, `export_tfjs.py`).
 
-## 🎯 Workflow
+---
 
-1. **Math Export (`tools/export_ears.py`):** Generates the physics matrices (`audio_config.json`) that ensure the App
-   and Python "hear" the same way.
-2. **Dataset Audit (`tools/audit_dataset.py`):** Checks your `datasets/audio/` folder to see which reciters need more
-   data.
-3. **Data Collection:** Place training audio in `datasets/audio/<reciter_name>/`.
-4. **Golden Set:** Place unseen test audio in `datasets/audio_test_set/<reciter_name>/` (Required for quality gates).
-5. **Background Noise:** Generate noise/silence for the `_background` class using `tools/export_background_manual.py`.
-6. **Feature Extraction (`prepare_data.py`):** Converts MP3s into spectrogram tensors (`datasets/features.npz`).
-7. **Training (`train.py`):** Trains the Keras model (`models/qari_model.h5`).
-8. **Evaluation (`evaluate_model.py`):** Checks the model against the Golden Set to ensure no regressions.
-9. **Conversion (`convert_wizard.py`):** Converts the valid Keras model to TensorFlow.js format.
+## 🛠️ Setup & Prerequisites
 
-## 🚀 Commands
-
-### 1. Setup Environment
+### 1. Python Environment
 
 ```bash
+# Windows
 python -m venv venv
-# Windows: .\venv\Scripts\activate | Mac: source venv/bin/activate
+.\venv\Scripts\activate
+pip install -r requirements.txt
+
+# Mac/Linux
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 
 ```
 
-### 2. Export Physics (The "Ears")
+### 2. Audio "Physics" Configuration
 
-Run this first to generate the shared configuration.
+Run this **first**. It generates `audio_config.json`, which ensures the Web App and Python "hear" audio exactly the same
+way.
 
 ```bash
 python tools/export_ears.py
 
 ```
 
-### 3. Generate Background Noise (Phase 1 Essential)
+### 3. Background Noise Generation
 
 Downloads or processes noise files (rain, typing, silence) to train the "Unknown" class.
-**Note:** You must have the ESC-50 dataset unzipped in `datasets/sound_datasets/esc50/`.
 
 ```bash
-# Deletes old files (--reset) and generates 35 mins of noise
-python tools/export_background_manual.py --noise_mins 35 --reset
+# Deletes old files (--reset) and generates 20 mins of noise
+python tools/export_background_manual.py --noise_mins 20 --reset
 
 ```
 
-**Output location:** `datasets/audio/_background/`
-**Example files:** `rain_1-54023.wav`, `silence_synthetic_001.wav`
+---
 
-### 4. Audit Dataset
+## ☁️ Option A: The "Hybrid" Workflow (Recommended)
+
+Use your local machine for coding and data collection, but let Google Colab's powerful GPUs handle the training.
+
+### Step 1: Push Code & Data 🚀
+
+Run this command to upload your local `research/`code, app public models, and `datasets/audio/` to Google Drive.
+
+```bash
+python tools/sync_manager.py --push
+
+```
+
+### Step 2: Train on Colab 🧠
+
+1. Open **`Qari_Trainer.ipynb`** in Google Colab.
+2. Mount Google Drive.
+3. Run the **"Train"** and **"Convert"** cells.
+4. The notebook automatically saves the trained model (`export model format`) and the web model (`tfjs_model/`) back to
+   your Drive.
+
+### Step 3: Pull Results 📥
+
+Download the trained brain back to your local machine. This updates your app's `public/models` folder automatically.
+
+```bash
+python tools/sync_manager.py --pull
+
+```
+
+---
+
+## 💻 Option B: The "Local Hero" Workflow
+
+If you prefer to run everything offline on your own machine.
+
+### 1. Audit Dataset
 
 Check for data imbalance (identifies "Low" or "High" duration reciters).
 
@@ -67,45 +103,61 @@ python tools/audit_dataset.py
 
 ```
 
-### 5. Prepare & Train
+### 2. Prepare Features
+
+Extracts spectrograms from audio files.
 
 ```bash
 python prepare_data.py
+
+```
+
+### 3. Train Model
+
+Trains the neural network. Now uses `model.export()` to create a clean SavedModel folder.
+
+```bash
 python train.py
 
 ```
 
-### 6. Evaluate (The Quality Gate) 🛡️
+### 4. Evaluate (Quality Gate) 🛡️
 
-Run this to compare your new model against the baseline.
+Compare your new model against the baseline to ensure no regressions.
 
 ```bash
 python evaluate_model.py
 
 ```
 
-### 7. Verify Math Parity
+### 5. Convert to Web
 
-If you change the DSP logic, run this to ensure Python's output matches the App's expectations.
+Converts the Keras model to a TensorFlow.js **Graph Model**.
 
-```bash
-python tools/verify_matrix.py
+* **Output:** `../app/public/models/tfjs_model/`
 
-```
-
-### 8. Convert to Web
-
-```bash
-python convert_wizard.py
-
-```
+---
 
 ## 🔬 File Guide
 
-* `prepare_data.py`: Main feature extraction script with "bad mic" augmentation.
-* `train.py`: Neural network training with Global Average Pooling (GAP).
-* `evaluate_model.py`: Strict no-regression tester using the Golden Test Set.
-* `convert_wizard.py`: Handles Keras to TFJS conversion (fixes Windows-specific missing `.so` errors).
-* `tools/export_ears.py`: Generates `audio_config.json`.
-* `tools/audit_dataset.py`: Scans audio files for true duration.
-* `tools/export_background_manual.py`: Generates named noise clips for the background class.
+### 🔄 Sync Tools
+
+* **`tools/sync_manager.py`**: The bridge between Local and Cloud.
+* `--push`: Uploads code/audio to Drive.
+* `--pull`: Downloads trained `.h5` and `tfjs_model` folder to your App.
+
+
+* **`Qari_Trainer.ipynb`**: The Colab Notebook for high-speed training.
+
+### 🧠 Research Scripts
+
+* **`prepare_data.py`**: Feature extraction with augmentation and index locking.
+* **`train.py`**: Training script. Defines the `SpecAugment` layer and exports clean SavedModels.
+* **`export_tfjs.py`**: Robust converter. Handles the Keras 3 -> SavedModel -> TFJS pipeline.
+* **`evaluate_model.py`**: Strict no-regression testing.
+
+### 🛠️ Utilities
+
+* **`tools/export_ears.py`**: Generates `audio_config.json` (the physics config).
+* **`tools/verify_matrix.py`**: Verifies mathematical parity between Python and JS.
+* **`tools/audit_dataset.py`**: Scans audio files for true duration and class balance.

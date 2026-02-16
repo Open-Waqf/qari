@@ -37,7 +37,7 @@ def export_matrices():
         "dft_imag": dft_imag.tolist()
     }
 
-    with open("../models/audio_config.json", "w") as f:
+    with open("../app/public/models/audio_config.json", "w") as f:
         json.dump(data, f)
 
     print(f"✅ Exported audio_config.json (Includes DFT Matrices)")

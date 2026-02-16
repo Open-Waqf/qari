@@ -1,7 +1,8 @@
-import numpy as np
-import librosa
 import json
+
+import numpy as np
 import scipy.io.wavfile as wav
+
 
 def verify_matrix_math():
     # 1. Load the Audio Physics (JSON)
@@ -17,8 +18,8 @@ def verify_matrix_math():
 
     # 2. Load the Sine Wave (Signal)
     # We manually load to ensure parity with the browser's 512 samples
-    sr, y = wav.read("./test_sine.wav")
-    y = y.astype(np.float32) / 32767.0 # Normalize to -1.0 to 1.0
+    sr, y = wav.read("./datasets/audio_test_sets/test_sine.wav")
+    y = y.astype(np.float32) / 32767.0  # Normalize to -1.0 to 1.0
     signal = y[0:512]
 
     # 3. RUN THE PIPELINE (Manual Matrix Math)
@@ -30,7 +31,7 @@ def verify_matrix_math():
     # [257, 512] @ [512] = [257]
     real_part = dft_real @ windowed
     imag_part = dft_imag @ windowed
-    magnitude = np.sqrt(real_part**2 + imag_part**2)
+    magnitude = np.sqrt(real_part ** 2 + imag_part ** 2)
 
     # C. Mel Filter
     # [40, 257] @ [257] = [40]
@@ -49,6 +50,7 @@ def verify_matrix_math():
     # DEBUG: Print Spectrum to compare with App
     print("\n🔍 Spectrum Magnitude (First 5):")
     print(magnitude[:5])
+
 
 if __name__ == "__main__":
     verify_matrix_math()

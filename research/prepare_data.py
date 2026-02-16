@@ -14,6 +14,17 @@ DATA_PATH = "datasets/audio"
 OUTPUT_PATH = "datasets/features.npz"
 APP_MODELS_DIR = Path("../app/public/models")
 RECITERS_MAP_PATH = APP_MODELS_DIR / "reciters_map.json"
+# -----------------------------
+# SAFE CAPPING (deterministic)
+# -----------------------------
+CAP_MINUTES_DEFAULT = None  # None = no cap for normal classes
+CAP_MINUTES_BY_CLASS = {
+    "_background": 20.0,  # keep your 20 min target
+    "raad_al_kurdi": 25.0,  # cap the bully
+    "ahmed_talib_hameed": 25.0,  # optional (barely high)
+}
+
+CAP_SEED = 42
 
 # --- 1. DEFINE THE "BAD MIC" SIMULATOR ---
 augment = Compose([
@@ -129,6 +140,21 @@ def process_dataset():
 
     file_counter = 0
     step = SAMPLES_PER_CHUNK // 2  # 50% overlap
+    hop_sec = step / SR  # 1.5s
+
+    def minutes_to_max_windows(minutes: float) -> int:
+        return int((minutes * 60.0) / hop_sec)
+
+    max_windows_by_class = {}
+    for r in reciters:
+        m = CAP_MINUTES_BY_CLASS.get(r, CAP_MINUTES_DEFAULT)
+        max_windows_by_class[r] = (minutes_to_max_windows(m) if m else None)
+
+    print("🧢 Caps (windows per class):")
+    for r in reciters:
+        cap = max_windows_by_class[r]
+        if cap is not None:
+            print(f"   - {r}: {cap} windows (~{CAP_MINUTES_BY_CLASS.get(r)} min)")
 
     for reciter in reciters:
         print(f"Processing {reciter}...")
@@ -138,9 +164,20 @@ def process_dataset():
             continue
         files = sorted(f for f in os.listdir(reciter_path) if not f.startswith("."))
 
+        # Deterministic shuffle so caps don't always take only the first sorted files
+        rng = np.random.default_rng(CAP_SEED + label_map[reciter])
+        files = list(files)
+        rng.shuffle(files)
+        cap_windows = max_windows_by_class.get(reciter)
+        kept_windows = 0  # counts CLEAN windows (dirty is paired)
+
         for file in files:
             if not file.lower().endswith((".mp3", ".wav")):
                 continue
+
+            # ✅ If we already reached cap, stop processing more files
+            if cap_windows is not None and kept_windows >= cap_windows:
+                break
 
             file_path = os.path.join(reciter_path, file)
 
@@ -161,6 +198,10 @@ def process_dataset():
                 continue
 
             for start in range(0, last_start + 1, step):
+                # ✅ Stop as soon as cap reached (before doing any work)
+                if cap_windows is not None and kept_windows >= cap_windows:
+                    break
+
                 chunk = audio[start:start + SAMPLES_PER_CHUNK]
                 if chunk.shape[0] != SAMPLES_PER_CHUNK:
                     continue
@@ -196,11 +237,18 @@ def process_dataset():
                     y.append(label_map[reciter])
                     groups.append(file_counter)
 
+                    # ✅ IMPORTANT: count 1 “window” per CLEAN+DIRTY pair
+                    kept_windows += 1
+
                 except Exception as e:
                     print(f"⚠️ Augmentation failed, skipping chunk pair: {e}")
                     continue
 
             file_counter += 1
+
+        if cap_windows is not None:
+            print(
+                f"🧢 {reciter}: kept {kept_windows}/{cap_windows} windows (clean), total samples added={kept_windows * 2}")
 
     X = np.array(X, dtype=np.float32)
     y = np.array(y, dtype=np.int64)
