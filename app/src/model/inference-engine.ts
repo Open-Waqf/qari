@@ -85,6 +85,46 @@ class InferenceEngine {
         noiseAdaptAlpha: 0.005,
     };
 
+    /**
+     * Sets the MODEL CONFIDENCE threshold (0.0 - 1.0).
+     * How sure must the AI be to trigger a match?
+     */
+    public setConfidenceThreshold(p: number) {
+        if (!Number.isFinite(p)) return;
+        // Clamp to avoid accidentally setting it to 0 (which accepts everything)
+        this.acceptTop1Min = Math.min(0.99, Math.max(0.10, p));
+
+        if (this.isDebug) {
+            console.log(`🎚️ Model Confidence Threshold set to ${(this.acceptTop1Min * 100).toFixed(1)}%`);
+        }
+    }
+
+    public getConfidenceThreshold() {
+        return this.acceptTop1Min;
+    }
+
+    /**
+     * Sets the AUDIO GATE noise floor (RMS Amplitude).
+     * Sounds below this relative level are ignored as silence.
+     */
+    public setNoiseFloor(noiseFloorRms: number) {
+        if (!Number.isFinite(noiseFloorRms)) return;
+
+        // Clamp to sane values (0.0003 is dead silent, 0.05 is a loud coffee shop)
+        const nf = Math.min(0.05, Math.max(0.0003, noiseFloorRms));
+
+        // 1. Update the baseline noise floor
+        this.gate.noiseFloor = nf;
+
+        // 2. Reset the gate counters so we don't get stuck in "Voiced" mode
+        this.gate.isVoiced = false;
+        this.gate.hangCounter = 0;
+
+        if (this.isDebug) {
+            console.log(`🔇 Noise Floor calibrated to RMS: ${this.gate.noiseFloor.toFixed(5)}`);
+        }
+    }
+
     // --- Feature flags ---
     private flags = {
         rmsNormalize: true,
@@ -92,18 +132,13 @@ class InferenceEngine {
         cmvn: false,
     };
 
-    public setThreshold(t: number) {
-        if (!Number.isFinite(t)) return;
-        // clamp to sane range
-        this.acceptTop1Min = Math.min(0.99, Math.max(0.01, t));
-        if (this.isDebug) {
-            console.log(`🎚️ acceptTop1Min=${(this.acceptTop1Min * 100).toFixed(1)}%`);
-        }
+    public getCurrentRms(): number {
+        // You need to store the last calculated RMS in a class property
+        // In handleIncomingAudio, assign `this.lastRms = rms;`
+        return this.lastRms || 0;
     }
 
-    public getThreshold() {
-        return this.acceptTop1Min;
-    }
+    private lastRms = 0;
 
     // --- DSP State ---
     private filterState = {x1: 0, y1: 0};
@@ -185,6 +220,7 @@ class InferenceEngine {
         console.log(`🧪 Far Field Mode: ${audioManager.isFarFieldMode() ? "ON" : "OFF"}`);
         console.log(`🧪 PreEmphasis: ${this.flags.preEmphasis ? "ON" : "OFF"}`);
         console.log(`🧪 RMS Normalized: ${this.flags.rmsNormalize ? "ON" : "OFF"}`);
+        console.log(`🧪 acceptTop1Min: ${(this.acceptTop1Min * 100).toFixed(1)}%`);
     }
 
     public reset() {
@@ -360,6 +396,7 @@ class InferenceEngine {
 
         const now = Date.now();
         const rms = this.calculateRms(this.gateScratch);
+        this.lastRms = rms;
 
         // Adaptive Noise Floor
         if (rms < this.gate.noiseFloor * 1.5) {

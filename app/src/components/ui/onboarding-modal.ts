@@ -1,14 +1,13 @@
 import {css, html, LitElement} from 'lit';
-import {customElement, property} from 'lit/decorators.js';
-import {audioManager} from "../../core/audio-manager.ts";
+import {customElement, property, state} from 'lit/decorators.js';
 import {inferenceEngine} from "../../model/inference-engine.ts";
-import {i18n} from "../../core/i18n.ts"; // Import default translations
+import {i18n} from "../../core/i18n.ts";
 
 @customElement('onboarding-modal')
 export class OnboardingModal extends LitElement {
-    @property({type: Boolean}) open = true;
     @property({type: Boolean}) showDetails = false;
-    @property({type: Boolean}) isCalibrating = false;
+
+    @state() isCalibrating = false;
 
     @property({type: Object}) dict = i18n.t;
 
@@ -27,8 +26,10 @@ export class OnboardingModal extends LitElement {
             backdrop-filter: blur(10px);
             transition: opacity 0.3s ease;
 
+            /* ✅ FIX: Force initial opacity to 1 */
+            opacity: 1;
             padding: 24px;
-            padding-bottom: env(safe-area-inset-bottom); /* Respect Home Bar */
+            padding-bottom: env(safe-area-inset-bottom);
             box-sizing: border-box;
         }
 
@@ -36,14 +37,16 @@ export class OnboardingModal extends LitElement {
             display: none;
         }
 
+        :host(.closing) {
+            opacity: 0;
+            pointer-events: none;
+        }
+
         .card {
             background: linear-gradient(145deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.01));
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 24px;
             padding: 32px;
-
-            box-sizing: border-box;
-
             width: 100%;
             max-width: 340px;
             text-align: center;
@@ -61,32 +64,6 @@ export class OnboardingModal extends LitElement {
             line-height: 1.5;
             margin-bottom: 24px;
             font-size: 0.95rem;
-        }
-
-        .features {
-            display: flex;
-            justify-content: space-around;
-            margin-bottom: 32px;
-        }
-
-        .feat {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 8px;
-            font-size: 0.8rem;
-            color: #fff;
-        }
-
-        .icon {
-            font-size: 1.5rem;
-            background: rgba(255, 255, 255, 0.1);
-            width: 48px;
-            height: 48px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 12px;
         }
 
         .btn {
@@ -133,42 +110,80 @@ export class OnboardingModal extends LitElement {
         }
     `;
 
-    private _handleStart() {
-        this.style.opacity = '0';
-        setTimeout(() => {
-            this.hidden = true;
-            this.dispatchEvent(new CustomEvent('onboard-complete'));
-        }, 300);
+    private async _handleStart() {
+        // Just triggers the unified flow
+        await this.runCalibration();
+        this.dispatchEvent(new CustomEvent('onboard-complete'));
     }
 
-    async runCalibration() {
+    async runCalibration(): Promise<number> {
+        // ✅ FIX: Force visibility + Spinner state immediately
         this.hidden = false;
-        this.style.opacity = '1';
-        this.open = true;
+        this.classList.remove('closing');
         this.isCalibrating = true;
-        const samples: number[] = [];
 
         return new Promise((resolve) => {
-            const checkNoise = (chunk: Float32Array) => {
-                let sum = 0;
-                for (let i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
-                samples.push(Math.sqrt(sum / chunk.length));
-            };
+            const samples: number[] = [];
 
-            // This triggers audio-manager.ts start()
-            // If it fails, the error will be caught in main.ts
-            audioManager.start(checkNoise);
+            const readRms = () => inferenceEngine.getCurrentRms();
 
-            setTimeout(() => {
-                audioManager.stop();
-                const peakNoise = Math.max(...samples);
-                const safeThreshold = peakNoise * 1.5;
-                inferenceEngine.setThreshold(safeThreshold);
-                this.isCalibrating = false;
-                this.hidden = true;
-                resolve(safeThreshold);
+            // Collect samples
+            const interval = window.setInterval(() => {
+                try {
+                    const v = readRms();
+                    if (Number.isFinite(v)) samples.push(Math.max(0, v));
+                } catch (e) { /* ignore */
+                }
+            }, 50);
+
+            // Finish after 2s
+            const timeout = window.setTimeout(() => {
+                window.clearInterval(interval);
+
+                // Fallback Logic
+                if (samples.length < 10) {
+                    const saved = Number(localStorage.getItem('qari_noise_floor'));
+                    const fallback = (Number.isFinite(saved) && saved > 0) ? saved : 0.001;
+                    inferenceEngine.setNoiseFloor(fallback);
+                    this._finish();
+                    resolve(fallback);
+                    return;
+                }
+
+                // P90 Logic
+                samples.sort((a, b) => a - b);
+                const p90 = samples[Math.floor(samples.length * 0.90)] ?? 0;
+                let noiseFloor = p90 * 1.15;
+                noiseFloor = Math.max(0.0003, Math.min(0.05, noiseFloor));
+
+                inferenceEngine.setNoiseFloor(noiseFloor);
+                localStorage.setItem('qari_noise_floor', String(noiseFloor));
+
+                console.log('✅ Calibrated Noise Floor:', noiseFloor);
+
+                this._finish();
+                resolve(noiseFloor);
             }, 2000);
+
+            // Safety cleanup
+            const stop = () => {
+                window.clearInterval(interval);
+                window.clearTimeout(timeout);
+                this.isCalibrating = false;
+            };
+            this.addEventListener('disconnected', stop, {once: true} as any);
         });
+    }
+
+    // Helper to close UI cleanly
+    private _finish() {
+        this.isCalibrating = false;
+        this.classList.add('closing');
+
+        setTimeout(() => {
+            this.hidden = true;
+            this.classList.remove('closing'); // Reset for next time
+        }, 300);
     }
 
     render() {
@@ -176,16 +191,17 @@ export class OnboardingModal extends LitElement {
             <div class="card">
                 ${this.isCalibrating ? html`
                     <div class="calibration-loader"></div>
-                    <h2>${this.dict.calibTitle}</h2>
-                    <p>${this.dict.calibDesc}</p>
+                    <h2>${this.dict.calibTitle || "Calibrating..."}</h2>
+                    <p>${this.dict.calibDesc || "Please stay silent for a moment."}</p>
                 ` : this.showDetails ? html`
-                    <h2>${this.dict.scienceTitle}</h2>
-                    <p>${this.dict.scienceDesc}</p>
-                    <button class="sub-btn" @click="${() => this.showDetails = false}">${this.dict.back}</button>
+                    <h2>${this.dict.scienceTitle || "How it works"}</h2>
+                    <p>${this.dict.scienceDesc || "We analyze audio features..."}</p>
+                    <button class="sub-btn" @click="${() => this.showDetails = false}">${this.dict.back || "Back"}
+                    </button>
                 ` : html`
-                    <h2>${this.dict.welcomeTitle}</h2>
-                    <p>${this.dict.welcomeDesc}</p>
-                    <button class="btn" @click="${this._handleStart}">${this.dict.getStarted}</button>
+                    <h2>${this.dict.welcomeTitle || "Welcome"}</h2>
+                    <p>${this.dict.welcomeDesc || "Let's calibrate your microphone."}</p>
+                    <button class="btn" @click="${this._handleStart}">${this.dict.getStarted || "Start"}</button>
                 `}
             </div>
         `;

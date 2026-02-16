@@ -207,6 +207,11 @@ export class QariApp extends LitElement {
             if (audioManager.isRunning) await audioManager.stop();
 
             const isOnline = await inferenceEngine.setup();
+            const savedNoise = Number(localStorage.getItem('qari_noise_floor'));
+            if (Number.isFinite(savedNoise) && savedNoise > 0) {
+                console.log('📂 Restoring saved noise floor:', savedNoise);
+                inferenceEngine.setNoiseFloor(savedNoise);
+            }
             if (!isOnline) throw new Error('Model Failed');
 
             await audioManager.start((chunk) => {
