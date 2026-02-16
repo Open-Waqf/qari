@@ -50,6 +50,7 @@ Open `http://localhost:5173` to start identifying reciters.
 ```bash
 cd research
 pip install -r requirements.txt
+# Place audio in datasets/audio/ and then:
 python prepare_data.py
 python train.py
 
@@ -71,4 +72,5 @@ This generates a new model and automatically formats it for the web app.
 ## 📜 License & Compliance
 
 Distributed under the **GPL-3.0-or-later** license.
+
 **Privacy Note:** This app does not record, store, or transmit any audio data.

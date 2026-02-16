@@ -89,7 +89,9 @@ def generate_silence(out_dir: Path, minutes: float, sr: int = 16000):
     for i in range(num_chunks):
         chunk = y[i * chunk_len: (i + 1) * chunk_len]
         path = out_dir / f"silence_synthetic_{i:03d}.wav"
-        sf.write(path, chunk, sr)
+
+        # ✅ EXPLICIT PCM_16
+        sf.write(path, chunk, sr, subtype='PCM_16')
 
 
 def process_esc50(src_dir: Path, out_dir: Path, target_mins: float, clip_sec: float):
@@ -97,7 +99,6 @@ def process_esc50(src_dir: Path, out_dir: Path, target_mins: float, clip_sec: fl
     meta_map = load_esc50_metadata(src_dir)
 
     # 2. Find WAVs
-    # Try looking in 'audio' subdir first (standard ESC-50 structure)
     audio_dir = src_dir / "audio"
     if not audio_dir.exists():
         audio_dir = src_dir  # Fallback to root
@@ -120,20 +121,17 @@ def process_esc50(src_dir: Path, out_dir: Path, target_mins: float, clip_sec: fl
             break
 
         try:
-            # Load
+            # Load (Librosa handles mono mixdown and 16k resample)
             y, sr = librosa.load(str(fpath), sr=16000, mono=True)
             y_clip = _make_clip(y, 16000, clip_sec)
 
             # Name Determination
-            # Use CSV category if available, else generic name
             original_name = fpath.name
             category = meta_map.get(original_name, "noise")
-
-            # Clean filename (rain_1-5423.wav)
             out_name = f"{category}_{fpath.stem}.wav"
 
-            # Save
-            sf.write(out_dir / out_name, y_clip, 16000)
+            # ✅ EXPLICIT PCM_16
+            sf.write(out_dir / out_name, y_clip, 16000, subtype='PCM_16')
 
             current_samples += y_clip.size
             count += 1
@@ -153,12 +151,9 @@ def main():
     p.add_argument("--noise_mins", type=float, default=30.0)
     p.add_argument("--silence_mins", type=float, default=5.0)
     p.add_argument("--clip_sec", type=float, default=10.0)
-
-    # NEW FLAG
     p.add_argument("--reset", action="store_true", help="Delete existing files in output folder first")
 
     args = p.parse_args()
-
     out_path = Path(args.out_dir)
 
     # 1. Handle Reset

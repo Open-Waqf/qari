@@ -2,17 +2,27 @@
 
 The Python environment for training, evaluating, and converting the Reciter Identification Model.
 
+## 📂 Project Structure
+
+* **`datasets/`**: Contains all heavy data (`audio/`, `audio_test_set/`, `features.npz`). Ignored by Git (except the
+  Golden Set).
+* **`models/`**: Stores trained models (`.h5`) and baselines (`.json`).
+* **`tools/`**: Helper scripts for auditing, physics export, and noise generation.
+* **Root Scripts:** The main pipeline (`prepare_data.py`, `train.py`, `evaluate_model.py`).
+
 ## 🎯 Workflow
 
-1. **Math Export (`export_ears.py`):** Generates the physics matrices (`audio_config.json`) that ensure the App and
-   Python "hear" the same way.
-2. **Dataset Audit (`audit_dataset.py`):** Checks your `audio/` folder to see which reciters need more data.
-3. **Data Collection:** Place training audio in `audio/<reciter_name>/`.
-4. **Golden Set:** Place unseen test audio in `audio_test_set/<reciter_name>/` (Required for quality gates).
-5. **Feature Extraction (`prepare_data.py`):** Converts MP3s into spectrogram tensors (`features.npz`).
-6. **Training (`train.py`):** Trains the Keras model (`qari_model.h5`).
-7. **Evaluation (`evaluate_model.py`):** Checks the model against the Golden Set to ensure no regressions.
-8. **Conversion (`convert_wizard.py`):** Converts the valid Keras model to TensorFlow.js format.
+1. **Math Export (`tools/export_ears.py`):** Generates the physics matrices (`audio_config.json`) that ensure the App
+   and Python "hear" the same way.
+2. **Dataset Audit (`tools/audit_dataset.py`):** Checks your `datasets/audio/` folder to see which reciters need more
+   data.
+3. **Data Collection:** Place training audio in `datasets/audio/<reciter_name>/`.
+4. **Golden Set:** Place unseen test audio in `datasets/audio_test_set/<reciter_name>/` (Required for quality gates).
+5. **Background Noise:** Generate noise/silence for the `_background` class using `tools/export_background_manual.py`.
+6. **Feature Extraction (`prepare_data.py`):** Converts MP3s into spectrogram tensors (`datasets/features.npz`).
+7. **Training (`train.py`):** Trains the Keras model (`models/qari_model.h5`).
+8. **Evaluation (`evaluate_model.py`):** Checks the model against the Golden Set to ensure no regressions.
+9. **Conversion (`convert_wizard.py`):** Converts the valid Keras model to TensorFlow.js format.
 
 ## 🚀 Commands
 
@@ -27,23 +37,37 @@ pip install -r requirements.txt
 
 ### 2. Export Physics (The "Ears")
 
-Run this first to generate the shared configuration for the app and feature extractor.
+Run this first to generate the shared configuration.
 
 ```bash
-python export_ears.py
+python tools/export_ears.py
 
 ```
 
-### 3. Audit Dataset
+### 3. Generate Background Noise (Phase 1 Essential)
+
+Downloads or processes noise files (rain, typing, silence) to train the "Unknown" class.
+**Note:** You must have the ESC-50 dataset unzipped in `datasets/sound_datasets/esc50/`.
+
+```bash
+# Deletes old files (--reset) and generates 35 mins of noise
+python tools/export_background_manual.py --noise_mins 35 --reset
+
+```
+
+**Output location:** `datasets/audio/_background/`
+**Example files:** `rain_1-54023.wav`, `silence_synthetic_001.wav`
+
+### 4. Audit Dataset
 
 Check for data imbalance (identifies "Low" or "High" duration reciters).
 
 ```bash
-python audit_dataset.py
+python tools/audit_dataset.py
 
 ```
 
-### 4. Prepare & Train
+### 5. Prepare & Train
 
 ```bash
 python prepare_data.py
@@ -51,7 +75,7 @@ python train.py
 
 ```
 
-### 5. Evaluate (The Quality Gate) 🛡️
+### 6. Evaluate (The Quality Gate) 🛡️
 
 Run this to compare your new model against the baseline.
 
@@ -60,16 +84,16 @@ python evaluate_model.py
 
 ```
 
-### 6. Verify Math Parity
+### 7. Verify Math Parity
 
 If you change the DSP logic, run this to ensure Python's output matches the App's expectations.
 
 ```bash
-python verify_matrix.py
+python tools/verify_matrix.py
 
 ```
 
-### 7. Convert to Web
+### 8. Convert to Web
 
 ```bash
 python convert_wizard.py
@@ -78,28 +102,10 @@ python convert_wizard.py
 
 ## 🔬 File Guide
 
-* `export_ears.py`: Generates `audio_config.json` containing Mel filterbanks and DFT matrices.
-* `audit_dataset.py`: Performs a deep scan of audio files to report true durations using Pydub.
 * `prepare_data.py`: Main feature extraction script with "bad mic" augmentation.
 * `train.py`: Neural network training with Global Average Pooling (GAP).
 * `evaluate_model.py`: Strict no-regression tester using the Golden Test Set.
-* `verify_matrix.py`: Debug tool to verify feature extraction parity against a sine wave.
 * `convert_wizard.py`: Handles Keras to TFJS conversion (fixes Windows-specific missing `.so` errors).
-
-
-With Reset (Recommended):
-This deletes the old generic files and replaces them with the new named ones.
-Bash
-
-python export_background_manual.py --noise_mins 35 --reset
-
-Check the Output:
-Go to research/datasets/audio/_background/. You should now see files like:
-
-    rain_1-54023.wav
-
-    dog_1-32001.wav
-
-    keyboard_typing_2-441.wav
-
-    silence_synthetic_001.wav
+* `tools/export_ears.py`: Generates `audio_config.json`.
+* `tools/audit_dataset.py`: Scans audio files for true duration.
+* `tools/export_background_manual.py`: Generates named noise clips for the background class.
