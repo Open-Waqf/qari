@@ -1,11 +1,13 @@
-import numpy as np
-import librosa
-from scipy.fftpack import dct
 import json
+
+import librosa
+import numpy as np
+from scipy.fftpack import dct
 
 SR = 16000
 N_FFT = 512
 N_MELS = 40
+
 
 def export_matrices():
     # 1. Mel Filterbank [40, 257]
@@ -35,11 +37,12 @@ def export_matrices():
         "dft_imag": dft_imag.tolist()
     }
 
-    with open("audio_config.json", "w") as f:
+    with open("../models/audio_config.json", "w") as f:
         json.dump(data, f)
 
     print(f"✅ Exported audio_config.json (Includes DFT Matrices)")
     print(f"DFT Real Shape: {dft_real.shape}")
+
 
 if __name__ == "__main__":
     export_matrices()

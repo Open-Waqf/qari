@@ -1,79 +1,105 @@
 # 🧪 Qari Finder Research Lab
 
-The Python environment for training the Reciter Identification Model.
+The Python environment for training, evaluating, and converting the Reciter Identification Model.
 
 ## 🎯 Workflow
 
-1. **Data Collection:** Place MP3 files in `audio/<reciter_name>/`.
-2. **Math Export (`export_ears.py`):** Generates the FFT/DCT matrices (`audio_config.json`) used by both Python and the
-   App.
-3. **Feature Extraction (`prepare_data.py`):** Converts MP3s into `.npz` files (Spectrograms).
-4. **Training (`train.py`):** Trains the Keras model (`qari_model.h5`) on the `.npz` data.
-5. **Conversion (`convert_wizard.py`):** Converts the Keras model to TensorFlow.js format (bypassing Windows errors).
-
-## 🗂️ Dataset Format
-
-Structure your `audio/` folder like this:
-
-```text
-audio/
-  ├── al_afasy/
-  │     ├── 001.mp3
-  │     └── 002.mp3
-  ├── sudais/
-  │     ├── 001.mp3
-  └── ...
-
-```
+1. **Math Export (`export_ears.py`):** Generates the physics matrices (`audio_config.json`) that ensure the App and
+   Python "hear" the same way.
+2. **Dataset Audit (`audit_dataset.py`):** Checks your `audio/` folder to see which reciters need more data.
+3. **Data Collection:** Place training audio in `audio/<reciter_name>/`.
+4. **Golden Set:** Place unseen test audio in `audio_test_set/<reciter_name>/` (Required for quality gates).
+5. **Feature Extraction (`prepare_data.py`):** Converts MP3s into spectrogram tensors (`features.npz`).
+6. **Training (`train.py`):** Trains the Keras model (`qari_model.h5`).
+7. **Evaluation (`evaluate_model.py`):** Checks the model against the Golden Set to ensure no regressions.
+8. **Conversion (`convert_wizard.py`):** Converts the valid Keras model to TensorFlow.js format.
 
 ## 🚀 Commands
 
-### 1. Setup Environment (Windows Safe)
-
-We use specific versions to avoid JAX/Flax errors on Windows.
+### 1. Setup Environment
 
 ```bash
 python -m venv venv
-.\venv\Scripts\activate
+# Windows: .\venv\Scripts\activate | Mac: source venv/bin/activate
 pip install -r requirements.txt
 
 ```
 
-### 2. Prepare Data
+### 2. Export Physics (The "Ears")
 
-Run this if you add new audio files:
+Run this first to generate the shared configuration for the app and feature extractor.
 
 ```bash
-python prepare_data.py
+python export_ears.py
 
 ```
 
-### 3. Train Model
+### 3. Audit Dataset
 
-Trains the neural network.
+Check for data imbalance (identifies "Low" or "High" duration reciters).
 
 ```bash
+python audit_dataset.py
+
+```
+
+### 4. Prepare & Train
+
+```bash
+python prepare_data.py
 python train.py
 
 ```
 
-* **Output:** `qari_model.h5`
-* **Note:** Ignore the "Conversion Failed" error at the end of this script.
+### 5. Evaluate (The Quality Gate) 🛡️
 
-### 4. Convert to Web (The Wizard Step)
+Run this to compare your new model against the baseline.
 
-Run this to generate the files for the app (fixes the `inference.so` missing error).
+```bash
+python evaluate_model.py
+
+```
+
+### 6. Verify Math Parity
+
+If you change the DSP logic, run this to ensure Python's output matches the App's expectations.
+
+```bash
+python verify_matrix.py
+
+```
+
+### 7. Convert to Web
 
 ```bash
 python convert_wizard.py
 
 ```
 
-* **Output:** `../app/public/models/tfjs_model/`
+## 🔬 File Guide
 
-## 🔬 Files
+* `export_ears.py`: Generates `audio_config.json` containing Mel filterbanks and DFT matrices.
+* `audit_dataset.py`: Performs a deep scan of audio files to report true durations using Pydub.
+* `prepare_data.py`: Main feature extraction script with "bad mic" augmentation.
+* `train.py`: Neural network training with Global Average Pooling (GAP).
+* `evaluate_model.py`: Strict no-regression tester using the Golden Test Set.
+* `verify_matrix.py`: Debug tool to verify feature extraction parity against a sine wave.
+* `convert_wizard.py`: Handles Keras to TFJS conversion (fixes Windows-specific missing `.so` errors).
 
-* `train.py`: Main training script.
-* `convert_wizard.py`: Special script to handle TFJS conversion on Windows.
-* `export_ears.py`: Generates physics matrices (`audio_config.json`).
-* `requirements.txt`: Pinned dependencies for stability.
+
+With Reset (Recommended):
+This deletes the old generic files and replaces them with the new named ones.
+Bash
+
+python export_background_manual.py --noise_mins 35 --reset
+
+Check the Output:
+Go to research/datasets/audio/_background/. You should now see files like:
+
+    rain_1-54023.wav
+
+    dog_1-32001.wav
+
+    keyboard_typing_2-441.wav
+
+    silence_synthetic_001.wav

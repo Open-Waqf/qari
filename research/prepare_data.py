@@ -9,8 +9,8 @@ from audiomentations import Compose, AddGaussianNoise, HighPassFilter, LowPassFi
 SR = 16000
 DURATION = 3.0
 SAMPLES_PER_CHUNK = int(SR * DURATION)  # 48000 samples
-DATA_PATH = "audio/"
-OUTPUT_PATH = "features.npz"
+DATA_PATH = "datasets/audio"
+OUTPUT_PATH = "datasets/features.npz"
 
 # --- 1. DEFINE THE "BAD MIC" SIMULATOR ---
 augment = Compose([

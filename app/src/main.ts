@@ -16,7 +16,7 @@ if (appRoot && !appRoot.querySelector('qari-app')) {
 }
 
 // Debug Initialization
-if (location.search.includes("debug=1")) {
+if (location.search.includes("debug=1") || true) {
     console.log("🐛 Debug Mode Enabled");
     installFileTestHotkey();       // Shift+T
     installMicCapHotkey();         // Shift+M

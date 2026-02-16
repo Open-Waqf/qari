@@ -4,7 +4,7 @@ import numpy as np
 from pydub import AudioSegment
 
 # Path to your audio folders
-DATA_PATH = "audio/"
+DATA_PATH = "../datasets/audio/"
 
 
 def get_true_duration(file_path):

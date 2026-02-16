@@ -61,7 +61,7 @@ class SpecAugment(keras.layers.Layer):
 
 def train_model():
     print("⏳ Loading dataset...")
-    data = np.load("features.npz", allow_pickle=True)
+    data = np.load("datasets/features.npz", allow_pickle=True)
     X = data["X"]
     y = data["y"]
     groups = data["groups"]
@@ -171,7 +171,7 @@ def train_model():
         callbacks=[early_stop, reduce_lr],
     )
 
-    model.save("qari_model.h5")
+    model.save("models/qari_model.h5")
     print("\n✅ Training Complete.")
     print("⚠️ NOW RUN: python convert_wizard.py")
 

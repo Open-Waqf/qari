@@ -1,4 +1,7 @@
-research/audio/
+research/datasets/audio/
+research/datasets/sound_datasets/
+datasets/features.npz
+*.npz
 research/venv/
 app/node_modules/
 app/dist/

@@ -428,16 +428,16 @@ def fail_on_high_conf_errors(results: List[FileResult], threshold: float) -> Tup
 def main():
     p = argparse.ArgumentParser(description="Golden + Challenge Evaluator (No-Regression Gate)")
 
-    p.add_argument("--root_dir", default="audio_test_sets", help="Root folder containing golden/ and challenge/")
+    p.add_argument("--root_dir", default="datasets/audio_test_sets", help="Root folder containing golden/ and challenge/")
     p.add_argument("--suite", choices=["golden", "challenge", "both"], default="both")
 
-    p.add_argument("--model", default="qari_model.h5")
+    p.add_argument("--model", default="models/qari_model.h5")
     p.add_argument("--audio_config", default="../app/public/models/audio_config.json")
     p.add_argument("--reciters_map", default="../app/public/models/reciters_map.json")
     p.add_argument("--normalization", default="../app/public/models/normalization.json")
 
-    p.add_argument("--baseline_golden", default="golden_baseline.json")
-    p.add_argument("--baseline_challenge", default="challenge_baseline.json")
+    p.add_argument("--baseline_golden", default="models/golden_baseline.json")
+    p.add_argument("--baseline_challenge", default="models/challenge_baseline.json")
 
     p.add_argument("--window_sec", type=float, default=WINDOW_SEC_DEFAULT)
     p.add_argument("--hop_sec", type=float, default=HOP_SEC_DEFAULT)
