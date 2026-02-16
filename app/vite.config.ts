@@ -32,7 +32,7 @@ export default defineConfig({
             },
             workbox: {
                 // This is the "Magic" part for AI apps
-                globPatterns: ['**/*.{js,css,html,json,bin,wav,woff2,ttf,bin}'],
+                globPatterns: ['**/*.{js,css,html,json,bin,wav,woff2,ttf,bin,wasm}'],
                 maximumFileSizeToCacheInBytes: 50 * 1024 * 1024
             }
         })

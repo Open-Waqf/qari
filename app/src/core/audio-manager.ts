@@ -77,14 +77,31 @@ export class AudioManager {
             // 1. Stream Acquisition
             // We ask for the stream FIRST to see what the hardware supports
             this._stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    channelCount: 1,
-                    echoCancellation: this.flags.farFieldMode,
-                    noiseSuppression: this.flags.farFieldMode,
-                    autoGainControl: this.flags.farFieldMode,
-                    sampleRate: this.config.targetSampleRate as any // Best effort
+                    audio: {
+                        // Standard Constraints (Keep these)
+                        channelCount: 1,
+                        sampleRate: this.config.targetSampleRate,
+
+                        // 🛑 LOGIC UPDATE:
+                        // If farFieldMode is OFF (we want Raw Audio), we must forcefully disable
+                        // the Android processing. Standard 'false' is not enough.
+
+                        echoCancellation: this.flags.farFieldMode,
+                        noiseSuppression: this.flags.farFieldMode,
+                        autoGainControl: this.flags.farFieldMode,
+
+                        // ☢️ ANDROID "NUCLEAR" OPTIONS (Ignored by Desktop/iOS, Vital for Android)
+                        // These force the underlying engine to bypass hardware DSP.
+                        // @ts-ignore - TypeScript doesn't know these vendor props
+                        googEchoCancellation: this.flags.farFieldMode,
+                        googAutoGainControl: this.flags.farFieldMode,
+                        googNoiseSuppression: this.flags.farFieldMode,
+                        googHighpassFilter: this.flags.farFieldMode, // ⚠️ CRITICAL: Stops bass cut
+                        googAudioMirroring: false,
+                    }
                 }
-            });
+            )
+            ;
 
             const track = this._stream.getAudioTracks()[0];
             const settings = track.getSettings();

@@ -3,6 +3,7 @@ import {customExtractor} from '../features/custom-extractor';
 import {RingBuffer} from './ring-buffer';
 import {EVENTS, type QariMatch} from '../core/events';
 import {audioManager} from "../core/audio-manager.ts";
+import {forceWasmBackend} from "./tf-backend";
 
 export const STATE_IDLE = 'Analyzing...';
 
@@ -153,12 +154,7 @@ class InferenceEngine {
 
     async setup(): Promise<boolean> {
         try {
-            await tf.ready();
-            if (tf.findBackend('wasm')) await tf.setBackend('wasm');
-            else if (tf.findBackend('webgl')) {
-                await tf.setBackend('webgl');
-                tf.env().set('WEBGL_PACK', false);
-            }
+            await forceWasmBackend(this.isDebug);
 
             await customExtractor.loadConfig();
             this.model = await tf.loadLayersModel('/models/tfjs_model/model.json');
