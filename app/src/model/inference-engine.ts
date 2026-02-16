@@ -116,6 +116,8 @@ class InferenceEngine {
         // 1. Update the baseline noise floor
         this.gate.noiseFloor = nf;
 
+        this.gate.calibrated = true;
+
         // 2. Reset the gate counters so we don't get stuck in "Voiced" mode
         this.gate.isVoiced = false;
         this.gate.hangCounter = 0;
@@ -147,6 +149,7 @@ class InferenceEngine {
     // --- Runtime ---
     private gate = {
         noiseFloor: 0.0015,
+        calibrated: false,
         isVoiced: false,
         hangCounter: 0,
         silenceCounter: 0,
@@ -399,15 +402,21 @@ class InferenceEngine {
         this.lastRms = rms;
 
         // Adaptive Noise Floor
-        if (rms < this.gate.noiseFloor * 1.5) {
+        // Calibration-aware gate
+        const calibrated = this.gate.calibrated;
+
+        const minFloor = calibrated ? 0 : this.config.silenceThreshold;
+
+        let gateOn = Math.max(minFloor, this.gate.noiseFloor * this.config.snrOn);
+
+        if (rms < gateOn) {
             const a = this.config.noiseAdaptAlpha;
             this.gate.noiseFloor = (1 - a) * this.gate.noiseFloor + a * rms;
         }
 
-        const gateOn = Math.max(this.config.silenceThreshold, this.gate.noiseFloor * this.config.snrOn);
-        const gateOff = Math.max(this.config.silenceThreshold * 0.7, this.gate.noiseFloor * this.config.snrOff);
+        gateOn = Math.max(minFloor, this.gate.noiseFloor * this.config.snrOn);
+        const gateOff = Math.max(minFloor * 0.7, this.gate.noiseFloor * this.config.snrOff);
 
-        // ✅ Only log if debug mode is active
         if (this.isDebug && now - this.debug.lastGateLogTime > 2000) {
             console.log(`🎤 RMS:${rms.toFixed(4)} Gate:${gateOn.toFixed(4)} Noise:${this.gate.noiseFloor.toFixed(4)}`);
             this.debug.lastGateLogTime = now;
