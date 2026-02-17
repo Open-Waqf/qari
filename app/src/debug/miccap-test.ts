@@ -30,7 +30,10 @@ export async function runMicCapTest(signal: Float32Array) {
         const r = rmsOf(window);
 
         // IMPORTANT: mic often comes in quieter than you think
-        if (r < 0.005) continue;
+        if (r < 0.003) {
+            console.log(`🏁 MICCAP | start=${startSec.toFixed(2)}s rms=${r.toFixed(4)} SKIP(silent)`);
+            continue;
+        }
 
         // 🟢 Using 2s window
         const result = await inferenceEngine.predictFromSignal(window, {
@@ -67,5 +70,10 @@ export async function runMicCapTest(signal: Float32Array) {
     const avg = sumProbs.map(v => v / wSum);
     const entFinal = entropyNormalized(avg);
 
-    console.log(`✅ MICCAP SEQUENCE DONE | Avg Entropy: ${entFinal.toFixed(3)}`);
+    // If your predictFromSignal already returns formatted names in raw.top3, you can just compute top3 here
+    // using engine labels if exposed; otherwise use a simple “best index” log:
+    const bestIdx = avg.reduce((bi, v, i) => (v > avg[bi] ? i : bi), 0);
+    const bestScore = avg[bestIdx];
+
+    console.log(`🏁 MICCAP FINAL | avg ent=${entFinal.toFixed(3)} | bestIdx=${bestIdx} score=${(bestScore * 100).toFixed(1)}%`);
 }

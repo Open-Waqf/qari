@@ -40,10 +40,13 @@ export class MicCap {
         console.log(`🎙️ MICCAP STOP | captured ${(this.write / this.sr).toFixed(2)}s`);
     }
 
-    getBuffer() {
-        if (!this.buf) return null;
-        // Return only what was written
-        return this.buf.subarray(0, this.write);
+    take(): Float32Array | null {
+        if (!this.buf || !this.ready) return null;
+        const out = this.buf.subarray(0, this.write); // view, no copy
+        this.buf = null;
+        this.write = 0;
+        this.ready = false;
+        return out;
     }
 }
 

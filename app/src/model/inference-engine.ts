@@ -388,13 +388,13 @@ class InferenceEngine {
         }
 
         // 🛑 TRUST WORKLET: It delivers 16k
-        const chunk16k = rawChunk;
+        const chunk = rawChunk;
 
         // 🛑 PARITY: Filter only for GATE, not for FEATURES
-        if (!this.gateScratch || this.gateScratch.length !== chunk16k.length) {
-            this.gateScratch = new Float32Array(chunk16k.length);
+        if (!this.gateScratch || this.gateScratch.length !== chunk.length) {
+            this.gateScratch = new Float32Array(chunk.length);
         }
-        this.gateScratch.set(chunk16k);
+        this.gateScratch.set(chunk);
         this.applyHighPassInPlace(this.gateScratch);
 
         const now = Date.now();
@@ -451,7 +451,7 @@ class InferenceEngine {
         this.debug.written++;
 
         // 🛑 PARITY: Write RAW 16k to buffer (Unfiltered)
-        this.buffer.write(chunk16k);
+        this.buffer.write(chunk);
 
         // Trigger Prediction
         if (this.buffer.isFull && !this.state.isPredicting) {
