@@ -407,19 +407,36 @@ class InferenceEngine {
 
         // Adaptive Noise Floor
         // Calibration-aware gate
-        const calibrated = this.gate.calibrated;
+        // Adaptive Noise Floor (two-speed + never drift below intended minimum)
+        const minGate = this.config.silenceThreshold;          // ✅ ALWAYS keep this safety floor
+        const minNoiseFloor = minGate / this.config.snrOn;     // ✅ ensures gateOn >= silenceThreshold
 
-        const minFloor = calibrated ? 0 : this.config.silenceThreshold;
+        const aDown = this.config.noiseAdaptAlpha;             // fast down
+        const aUp = aDown * 0.15;                              // slow up (tune 0.10–0.25)
 
-        let gateOn = Math.max(minFloor, this.gate.noiseFloor * this.config.snrOn);
+        // Provisional gates from current floor
+        let gateOn = Math.max(minGate, this.gate.noiseFloor * this.config.snrOn);
+        let gateOff = Math.max(minGate * 0.7, this.gate.noiseFloor * this.config.snrOff);
 
-        if (rms < gateOn) {
-            const a = this.config.noiseAdaptAlpha;
-            this.gate.noiseFloor = (1 - a) * this.gate.noiseFloor + a * rms;
+        // Learn noise floor only from "noise-like" frames
+        const noiseLike = (!this.gate.isVoiced) || (rms < gateOff);
+
+        if (noiseLike) {
+            const target = rms;
+            const alpha = target < this.gate.noiseFloor ? aDown : aUp;
+            this.gate.noiseFloor = (1 - alpha) * this.gate.noiseFloor + alpha * target;
+
+            // ✅ clamp to prevent drift-too-low and insane highs
+            this.gate.noiseFloor = Math.min(0.05, Math.max(minNoiseFloor, this.gate.noiseFloor));
+        } else {
+            // ✅ still enforce minimum
+            this.gate.noiseFloor = Math.min(0.05, Math.max(minNoiseFloor, this.gate.noiseFloor));
         }
 
-        gateOn = Math.max(minFloor, this.gate.noiseFloor * this.config.snrOn);
-        const gateOff = Math.max(minFloor * 0.7, this.gate.noiseFloor * this.config.snrOff);
+        // Recompute gates after potential update
+        gateOn = Math.max(minGate, this.gate.noiseFloor * this.config.snrOn);
+        gateOff = Math.max(minGate * 0.7, this.gate.noiseFloor * this.config.snrOff);
+
 
         if (this.isDebug && now - this.debug.lastGateLogTime > 2000) {
             console.log(`🎤 RMS:${rms.toFixed(4)} Gate:${gateOn.toFixed(4)} Noise:${this.gate.noiseFloor.toFixed(4)}`);
