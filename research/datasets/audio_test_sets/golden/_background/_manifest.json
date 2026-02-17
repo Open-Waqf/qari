@@ -1,0 +1,31 @@
+{
+  "meta": {
+    "preset": "golden",
+    "sr": 22050,
+    "seed": 1337,
+    "clip_sec": 20.0,
+    "noise_mins": 5.0,
+    "silence_mins": 2.0,
+    "esc50_root": "..\\..\\..\\sound_datasets\\esc50\\ESC-50-master",
+    "overlap_avoidance": true,
+    "excluded_sources_count": 360
+  },
+  "used_esc50_files": [
+    "1-29680-A-21.wav",
+    "2-117625-A-10.wav",
+    "1-51805-H-33.wav",
+    "1-51037-A-16.wav",
+    "2-95567-A-23.wav",
+    "3-158056-A-31.wav",
+    "4-198025-A-23.wav",
+    "5-210571-A-38.wav",
+    "4-158653-A-32.wav",
+    "2-118459-A-32.wav",
+    "4-181035-A-38.wav",
+    "2-82455-A-23.wav",
+    "2-70367-A-33.wav",
+    "1-82817-A-30.wav",
+    "3-144120-A-32.wav"
+  ],
+  "created_at_unix": 1771331084
+}
