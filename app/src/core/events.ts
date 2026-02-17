@@ -21,6 +21,7 @@ export interface QariMatch {
 export interface QariResultPayload {
     winner: QariMatch;
     others: QariMatch[];
+    stable?: boolean;
 }
 
 export interface AppStatePayload {

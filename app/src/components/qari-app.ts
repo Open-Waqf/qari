@@ -148,20 +148,22 @@ export class QariApp extends LitElement {
             return;
         }
 
-        if (winner.score < 0.75) {
+        const isStable = (e as CustomEvent<QariResultPayload>).detail.stable ?? (winner.score >= 0.75);
+
+        if (!isStable) {
             this.pillState = 'stabilizing';
             this.pillText = this.t.stabilizing;
             this.winner = winner;
             return;
         }
 
-        // Confirmed match
+        // ✅ Confirmed match (engine says stable)
         if (this.pillState !== 'match') platform.hapticSuccess();
         this.pillState = 'match';
         this.pillText = this.t.confirmed;
         this.winner = winner;
 
-        // Show result card once
+        // Show result card once (only when stable)
         const card = this.querySelector('glass-card') as any;
         if (card && !card.visible) {
             card.name = winner.name;

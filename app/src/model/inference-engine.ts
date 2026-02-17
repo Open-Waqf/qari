@@ -499,7 +499,10 @@ class InferenceEngine {
         if (winnerChanged || enoughTime) {
             this.state.lastDispatchWinner = d.winner.name;
             this.state.lastDispatchTime = now;
-            window.dispatchEvent(new CustomEvent(EVENTS.RESULT_FOUND, {detail: {winner: d.winner, others: d.others}}));
+            window.dispatchEvent(new CustomEvent(EVENTS.RESULT_FOUND, {
+                detail: {winner: d.winner, others: d.others, stable: d.stable}
+            }));
+
         }
     }
 
@@ -702,7 +705,22 @@ class InferenceEngine {
             winner = this.state.stableWinner ?? {name: STATE_IDLE, score: 0};
         }
 
-        return {winner, others: topMatches.filter(m => m.score > 0.05), ent, top1, top2, diff, ratio};
+        const stable =
+            winner.name !== STATE_IDLE &&
+            this.state.stableWinner != null &&
+            winner.name === this.state.stableWinner.name &&
+            notConfused && strongTop1 && clearWin;
+
+        return {
+            winner,
+            others: topMatches.filter(m => m.score > 0.05),
+            ent,
+            top1,
+            top2,
+            diff,
+            ratio,
+            stable,
+        };
     }
 
     private analyzeRawProbs(probs: number[]) {
