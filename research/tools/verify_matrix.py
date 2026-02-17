@@ -62,15 +62,15 @@ async def find_running_app(browser):
     Tries Localhost, Hostname, and WSL Gateway.
     """
     candidates = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173"
+        "http://localhost:5173/?debug=1",
+        "http://127.0.0.1:5173/?debug=1"
     ]
 
     # 1. Try Computer Name
     try:
         hostname = socket.gethostname()
         if hostname:
-            candidates.append(f"http://{hostname}:5173")
+            candidates.append(f"http://{hostname}:5173/?debug=1")
     except:
         pass
 
@@ -80,7 +80,7 @@ async def find_running_app(browser):
             cmd = "ip route show | grep default | awk '{print $3}'"
             host_ip = subprocess.check_output(cmd, shell=True).decode().strip()
             if host_ip:
-                candidates.append(f"http://{host_ip}:5173")
+                candidates.append(f"http://{host_ip}:5173/?debug=1")
                 print(f"   (Detected WSL Bridge IP: {host_ip})")
     except:
         pass
