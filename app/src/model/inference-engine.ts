@@ -306,18 +306,24 @@ class InferenceEngine {
 
     private normalizeSignal(x: Float32Array, floor = 0.002): { y: Float32Array; gain: number; rms: number } {
         const r = this.calculateRms(x);
+
+        // 1. Floor Gate (Parity with Python)
         if (r < floor) return {y: x, gain: 1, rms: r};
 
+        // 2. Linear Gain Calculation
         let g = this.config.targetRms / r;
         g = Math.min(Math.max(g, this.config.minGain), this.config.maxGain);
 
+        // Optimization: Skip if gain is effectively 1.0
         if (Math.abs(g - 1) < 1e-3) return {y: x, gain: g, rms: r};
 
         const y = new Float32Array(x.length);
         for (let i = 0; i < x.length; i++) {
-            const v = x[i] * g;
-            // tanh-ish soft clip
-            y[i] = v / (1 + Math.abs(v));
+            // 🟢 PARITY FIX: Linear Gain + Hard Clip (Removes soft-clip distortion)
+            let v = x[i] * g;
+            if (v > 1.0) v = 1.0;
+            else if (v < -1.0) v = -1.0;
+            y[i] = v;
         }
         return {y, gain: g, rms: r};
     }

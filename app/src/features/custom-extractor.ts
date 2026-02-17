@@ -22,38 +22,39 @@ export class CustomAudioExtractor {
     }
 
     /**
-     * Process a 2.0s clip (44100 samples) -> Image (40, 171, 1)
-     * Enforces strict padding/trimming to ensure the model always gets 171 frames.
+     * Process signal -> MFCCs [40, Frames, 1]
+     * @param opts.strictShape If true (default), forces 2.0s duration (171 frames). Set false for parity tests.
      */
-    extractFullClip(signal: Float32Array, opts?: { cmvn?: boolean }): tf.Tensor {
+    extractFullClip(signal: Float32Array, opts?: { cmvn?: boolean; strictShape?: boolean }): tf.Tensor {
         if (!this.isReady) throw new Error("Audio Config not loaded");
 
         const cmvn = !!opts?.cmvn;
+        // 🟢 FIX: Default to TRUE for model safety, but allow FALSE for unit tests
+        const strictShape = opts?.strictShape ?? true;
 
         return tf.tidy(() => {
-            // 1. 🟢 ENFORCE PARITY: Strict 2.0s length @ 22050Hz
-            const TARGET_LEN = 44100;
             let processedSignal = signal;
+            const TARGET_LEN = 44100;
 
-            if (signal.length > TARGET_LEN) {
-                // Trim if too long
-                processedSignal = signal.subarray(0, TARGET_LEN);
-            } else if (signal.length < TARGET_LEN) {
-                // Pad with silence if too short
-                processedSignal = new Float32Array(TARGET_LEN);
-                processedSignal.set(signal);
+            // 🟢 APPLY STRICT PADDING ONLY IF REQUESTED
+            if (strictShape) {
+                if (signal.length > TARGET_LEN) {
+                    processedSignal = signal.subarray(0, TARGET_LEN);
+                } else if (signal.length < TARGET_LEN) {
+                    processedSignal = new Float32Array(TARGET_LEN);
+                    processedSignal.set(signal);
+                }
             }
 
             const frameSize = 512;
             const hopSize = 256;
 
-            // 🟢 USE processedSignal.length (Guaranteed 44100 -> 171 frames)
+            // Use processedSignal (which might be padded OR raw 512)
             const framesCount = Math.floor((processedSignal.length - frameSize) / hopSize) + 1;
 
             const flatBuffer = new Float32Array(framesCount * frameSize);
             for (let i = 0; i < framesCount; i++) {
                 const start = i * hopSize;
-                // 🟢 USE processedSignal.subarray
                 flatBuffer.set(processedSignal.subarray(start, start + frameSize), i * frameSize);
             }
 
@@ -70,7 +71,6 @@ export class CustomAudioExtractor {
 
             let mfcc = tf.matMul(this.dctMatrix!, logMel); // [40, Frames]
 
-            // CMVN per coefficient across time (axis=1)
             if (cmvn) {
                 const mean = tf.mean(mfcc, 1, true);
                 const var_ = tf.mean(tf.square(mfcc.sub(mean)), 1, true);
@@ -78,7 +78,7 @@ export class CustomAudioExtractor {
                 mfcc = mfcc.sub(mean).div(std);
             }
 
-            return mfcc.expandDims(-1); // [40, Frames, 1]
+            return mfcc.expandDims(-1);
         });
     }
 

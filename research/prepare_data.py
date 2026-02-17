@@ -24,13 +24,18 @@ EXPECTED_FRAMES = 1 + (SAMPLES_PER_CHUNK - FRAME_LENGTH) // HOP_LENGTH
 RMS_MIN_RECITER = 0.01
 RMS_MIN_BG = 0.003
 
+TARGET_RMS = 0.10
+MIN_GAIN = 0.6
+MAX_GAIN = 2.5
+RMS_FLOOR = 0.002
+
 # -----------------------------
 # SAFE CAPPING (deterministic)
 # -----------------------------
 # 🟢 CHANGED: Set a default cap to stop "Bullies" automatically
 CAP_MINUTES_DEFAULT = 15.0
 CAP_MINUTES_BY_CLASS = {
-    "_background": 60.0
+    "_background": 20.0
 }
 
 CAP_SEED = 42
@@ -49,6 +54,26 @@ augment = Compose([
     # LowPass: Cuts "Hiss" but KEEPS Voice Clarity (6000Hz+)
     LowPassFilter(min_cutoff_freq=6000, max_cutoff_freq=7800, p=0.3),
 ])
+
+
+def normalize_signal(x: np.ndarray) -> np.ndarray:
+    r = float(np.sqrt(np.mean(x ** 2))) if x.size else 0.0
+
+    # 1. Floor Gate (Critical: Don't boost background noise)
+    if r < RMS_FLOOR:
+        return x
+
+    # 2. Linear Gain
+    g = TARGET_RMS / max(1e-12, r)
+    g = float(np.clip(g, MIN_GAIN, MAX_GAIN))
+
+    if abs(g - 1.0) < 1e-3:
+        return x
+
+    # 🟢 PARITY FIX: Linear Gain + Hard Clip
+    y = x * g
+    y = np.clip(y, -1.0, 1.0)
+    return y.astype(np.float32, copy=False)
 
 
 def load_or_update_reciters_map(data_path: str) -> list[str]:
@@ -232,11 +257,15 @@ def process_dataset():
                     continue
 
                 try:
-                    # Clean
-                    clean_entry = _mfcc_image_from_chunk(chunk)
+                    # 🟢 CALL HERE: Normalize BEFORE augmentation/features
+                    norm_chunk = normalize_signal(chunk)
 
-                    # Dirty (keep exact length)
-                    dirty_chunk = augment(samples=chunk, sample_rate=SR).astype(np.float32, copy=False)
+                    # 1. CLEAN (Use normalized)
+                    clean_entry = _mfcc_image_from_chunk(norm_chunk)
+
+                    # 2. DIRTY (Augment the normalized chunk)
+                    dirty_chunk = augment(samples=norm_chunk, sample_rate=SR).astype(np.float32, copy=False)
+
                     if len(dirty_chunk) > SAMPLES_PER_CHUNK:
                         dirty_chunk = dirty_chunk[:SAMPLES_PER_CHUNK]
                     elif len(dirty_chunk) < SAMPLES_PER_CHUNK:

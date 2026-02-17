@@ -113,17 +113,21 @@ def calculate_rms(x: np.ndarray) -> float:
 
 def normalize_signal(x: np.ndarray, cfg: DspConfig) -> np.ndarray:
     r = calculate_rms(x)
+
+    # 1. Floor Gate
     if r < cfg.rms_floor:
         return x
 
+    # 2. Linear Gain
     g = cfg.target_rms / max(1e-12, r)
     g = float(np.clip(g, cfg.min_gain, cfg.max_gain))
 
     if abs(g - 1.0) < 1e-3:
         return x
 
+    # 🟢 PARITY FIX: Linear Gain + Hard Clip
     y = x * g
-    y = y / (1.0 + np.abs(y))  # soft clip
+    y = np.clip(y, -1.0, 1.0)  # Hard clip prevents float32 blowouts
     return y.astype(np.float32, copy=False)
 
 

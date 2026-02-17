@@ -42,7 +42,7 @@ export async function checkAudioParity(input: string | number[]) {
     // 2. Run the Extractor
     // We pass the signal to your class.
     // It returns a Tensor [40, Frames, 1]
-    const tensorResult = customExtractor.extractFullClip(signal);
+    const tensorResult = customExtractor.extractFullClip(signal, { strictShape: false });
 
     // 3. Extract Data
     const values = await tensorResult.data();
