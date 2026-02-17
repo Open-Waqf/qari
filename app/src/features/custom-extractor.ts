@@ -28,14 +28,25 @@ export class CustomAudioExtractor {
         const cmvn = !!opts?.cmvn;
 
         return tf.tidy(() => {
+
+            const TARGET_LEN = 44100;
+            let processedSignal = signal;
+
+            if (signal.length > TARGET_LEN) {
+                processedSignal = signal.subarray(0, TARGET_LEN);
+            } else if (signal.length < TARGET_LEN) {
+                processedSignal = new Float32Array(TARGET_LEN);
+                processedSignal.set(signal);
+            }
+
             const frameSize = 512;
             const hopSize = 256;
-            const framesCount = Math.floor((signal.length - frameSize) / hopSize) + 1;
+            const framesCount = Math.floor((processedSignal.length - frameSize) / hopSize) + 1;
 
             const flatBuffer = new Float32Array(framesCount * frameSize);
             for (let i = 0; i < framesCount; i++) {
                 const start = i * hopSize;
-                flatBuffer.set(signal.subarray(start, start + frameSize), i * frameSize);
+                flatBuffer.set(processedSignal.subarray(start, start + frameSize), i * frameSize);
             }
 
             const signalTensor = tf.tensor2d(flatBuffer, [framesCount, frameSize]);
