@@ -18,11 +18,12 @@ LOCAL_PROJECT_ROOT = LOCAL_RESEARCH.parent
 # We exclude heavy artifacts that Colab will regenerate or that are useless there.
 PUSH_IGNORE = shutil.ignore_patterns(
     "venv", "venv_*", ".git", "__pycache__", ".idea", "node_modules", "wandb",
-    "*.h5",  # Don't push local heavy models (we pull them instead)
+    "*.h5", "*.keras",  # Don't push local heavy models (we pull them instead)
     "features.npz",  # Don't push features (regenerate on Colab is faster)
     "*.zip", "*.7z",  # Don't push archives
     "miccap*", "raw_mic*",  # Don't push local debug recordings
     "tfjs_model",  # Don't push old web models
+    "qari_model_export",  # Don't push exported SavedModel folder
     ".DS_Store",
     "sound_datasets",
     "archive"
@@ -168,14 +169,14 @@ def pull_from_drive():
     ensure_drive_connected()
     log("📥 STARTING PULL (Drive -> Local)...")
 
-    # 1. Pull Trained H5 Models
+    # 1. Pull trained model artifacts (Keras file + exported SavedModel + baselines)
     src_models = DRIVE_ROOT / "research" / "models"
     dst_models = LOCAL_RESEARCH / "models"
 
     if src_models.exists():
-        log("📦 Pulling updated .h5 models...")
-        # We only want .h5 and .json (baselines) from here
-        MODEL_ONLY_IGNORE = shutil.ignore_patterns("*.py", "*.txt")
+        log("📦 Pulling updated model artifacts (.keras/.h5 + exports + baselines)...")
+        # We want .keras/.h5, exported model folders, and .json baselines from here
+        MODEL_ONLY_IGNORE = shutil.ignore_patterns("*.py", "*.txt", "*.log")
         sync_folder_copytree(src_models, dst_models, MODEL_ONLY_IGNORE)
     else:
         log("⚠️ No models folder found in Drive yet.")
