@@ -2,48 +2,42 @@ class ResamplerProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
 
-        this.TARGET = 16000;
+        // ✅ App parity with training
+        this.TARGET = 22050;
 
         // Output buffer
         this.out = new Float32Array(16384);
         this.outLen = 0;
 
         // FIR settings
-        this.DECIM = 3;
-        this.TAPS = 63;          // odd number
-        this.CUTOFF_HZ = 7300;   // under 8k Nyquist of 16k
+        this.TAPS = 63; // odd number
 
-        // --- 48k -> 16k state (decimate by 3) ---
-        this.h48 = null;
-        this.hist48 = new Float32Array(this.TAPS);
-        this.histPos48 = 0;
-        this.filled48 = 0;
-        this.sampleCounter48 = 0;
-
-        // --- Generic lowpass state (for fs != 48k) ---
+        // FIR lowpass state
         this.hLP = null;
         this.hLPFs = 0;
+        this.hLPCut = 0;
+
         this.histLP = new Float32Array(this.TAPS);
         this.histPosLP = 0;
         this.filledLP = 0;
 
-        this.tmpLP = new Float32Array(128); // reused per block
+        this.tmpLP = new Float32Array(128); // worklet block size
 
-        // Fallback resample state (fractional position)
+        // Fractional resample state
         this.frac = 0;
         this.prev = 0;
 
         this.didLog = false;
     }
 
-    buildFIR(fs) {
+    buildFIR(fs, cutoffHz) {
         // Clamp cutoff to input Nyquist to avoid invalid designs
-        const cutoffHz = Math.min(this.CUTOFF_HZ, 0.45 * fs);
+        const cutoff = Math.min(cutoffHz, 0.45 * fs);
 
         // Windowed-sinc lowpass (Blackman), DC-normalized
         const taps = this.TAPS;
         const M = taps - 1;
-        const fc = cutoffHz / fs; // cycles/sample
+        const fc = cutoff / fs; // cycles/sample
 
         const h = new Float32Array(taps);
         let sum = 0;
@@ -52,11 +46,8 @@ class ResamplerProcessor extends AudioWorkletProcessor {
             const n = i - M / 2;
 
             let sinc;
-            if (n === 0) {
-                sinc = 2 * fc;
-            } else {
-                sinc = Math.sin(2 * Math.PI * fc * n) / (Math.PI * n);
-            }
+            if (n === 0) sinc = 2 * fc;
+            else sinc = Math.sin(2 * Math.PI * fc * n) / (Math.PI * n);
 
             // Blackman window
             const w =
@@ -86,7 +77,7 @@ class ResamplerProcessor extends AudioWorkletProcessor {
 
     flush4096() {
         while (this.outLen >= 4096) {
-            const chunk = this.out.slice(0, 4096); // copy
+            const chunk = this.out.slice(0, 4096);
             this.port.postMessage(chunk);
 
             this.out.copyWithin(0, 4096, this.outLen);
@@ -94,46 +85,22 @@ class ResamplerProcessor extends AudioWorkletProcessor {
         }
     }
 
-    // --- 48k -> 16k path (unchanged) ---
-    firDecimateBy3(inCh) {
-        if (!this.h48) this.h48 = this.buildFIR(sampleRate);
-
-        for (let i = 0; i < inCh.length; i++) {
-            const x = inCh[i];
-
-            this.hist48[this.histPos48] = x;
-            this.histPos48 = (this.histPos48 + 1) % this.TAPS;
-
-            if (this.filled48 < this.TAPS) {
-                this.filled48++;
-                this.sampleCounter48++;
-                continue;
-            }
-
-            this.sampleCounter48++;
-            if (this.sampleCounter48 % this.DECIM !== 0) continue;
-
-            let y = 0;
-            let idx = this.histPos48;
-            for (let k = 0; k < this.TAPS; k++) {
-                idx = (idx - 1 + this.TAPS) % this.TAPS;
-                y += this.hist48[idx] * this.h48[k];
-            }
-
-            this.pushOut(y);
-        }
-    }
-
-    // --- NEW: FIR lowpass for fallback (fs != 48k) ---
+    // FIR lowpass (anti-alias) for downsampling
     firLowpassBlock(inCh, fs) {
-        if (!this.hLP || this.hLPFs !== fs) {
-            this.hLP = this.buildFIR(fs);
+        // ✅ Critical: bandlimit to TARGET Nyquist when downsampling
+        // cutoff ≈ 0.45 * min(inputFs, targetFs)
+        const cutoffHz = 0.45 * Math.min(fs, this.TARGET);
+
+        if (!this.hLP || this.hLPFs !== fs || this.hLPCut !== cutoffHz) {
+            this.hLP = this.buildFIR(fs, cutoffHz);
             this.hLPFs = fs;
+            this.hLPCut = cutoffHz;
+
             this.histLP.fill(0);
             this.histPosLP = 0;
             this.filledLP = 0;
 
-            // Reset fractional resample state so we don't carry old phase
+            // Reset fractional resample phase
             this.frac = 0;
             this.prev = 0;
         }
@@ -149,7 +116,6 @@ class ResamplerProcessor extends AudioWorkletProcessor {
             this.histPosLP = (this.histPosLP + 1) % this.TAPS;
             if (this.filledLP < this.TAPS) this.filledLP++;
 
-            // Convolution (symmetric FIR, newest sample first)
             let y = 0;
             let idx = this.histPosLP;
             for (let k = 0; k < this.TAPS; k++) {
@@ -163,7 +129,7 @@ class ResamplerProcessor extends AudioWorkletProcessor {
         return this.tmpLP.subarray(0, inCh.length);
     }
 
-    // Fallback resample (now fed with lowpassed audio)
+    // Linear resample (fed with lowpassed audio)
     linearResample(inCh, ratio) {
         if (inCh.length === 0) return;
 
@@ -194,39 +160,23 @@ class ResamplerProcessor extends AudioWorkletProcessor {
         const fs = sampleRate;
 
         if (!this.didLog) {
-            console.log(`🎛️ Worklet fs=${fs}Hz (target 16k)`);
-
-            if (fs === 48000) {
-                console.log("✅ Mode: FIR decimate-by-3 (48k→16k)");
-            } else if (fs === this.TARGET) {
-                console.log("✅ Mode: Direct pass-through (16k)");
-            } else {
-                console.log("✅ Mode: FIR lowpass + linear fallback");
-            }
-
-            this.didLog = true; // Latch set to true forever
+            console.log(`🎛️ Worklet fs=${fs}Hz → target=${this.TARGET}Hz`);
+            this.didLog = true;
         }
 
-        // Fast path: already 16k
+        // Pass-through if already TARGET
         if (fs === this.TARGET) {
             for (let i = 0; i < inCh.length; i++) this.pushOut(inCh[i]);
             this.flush4096();
             return true;
         }
 
-        // Best path: 48k -> 16k via FIR decimation-by-3
-        if (fs === 48000) {
-            this.firDecimateBy3(inCh);
-            this.flush4096();
-            return true;
-        }
-
-        // NEW: Bandlimited fallback for all other rates (esp. 44.1k)
-        if (this.didLog) console.log("✅ Resample mode: FIR lowpass + linear (generic→16k)");
+        // Generic bandlimited resample for all other rates (48k, 44.1k, etc.)
         const filtered = this.firLowpassBlock(inCh, fs);
         const ratio = fs / this.TARGET;
         this.linearResample(filtered, ratio);
         this.flush4096();
+
         return true;
     }
 }

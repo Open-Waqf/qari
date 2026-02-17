@@ -1,12 +1,12 @@
-export class MicCap16k {
+export class MicCap {
     private buf: Float32Array | null = null;
     private write = 0;
-    private sr = 16000;
+    private sr = 22050; // 🟢 Updated
 
     public active = false;
     public ready = false;
 
-    start(seconds = 8, sampleRate = 16000) {
+    start(seconds = 8, sampleRate = 22050) { // 🟢 Updated
         this.sr = sampleRate;
         this.buf = new Float32Array(Math.floor(seconds * this.sr));
         this.write = 0;
@@ -15,15 +15,15 @@ export class MicCap16k {
         console.log(`🎙️ MICCAP START | ${seconds}s @ ${this.sr}Hz`);
     }
 
-    // called from audio loop (expects 16k chunks)
-    onChunk(chunk16k: Float32Array) {
+    // called from audio loop
+    onChunk(chunk: Float32Array) {
         if (!this.active || !this.buf) return;
 
         const remaining = this.buf.length - this.write;
         if (remaining <= 0) return;
 
-        const n = Math.min(remaining, chunk16k.length);
-        this.buf.set(chunk16k.subarray(0, n), this.write);
+        const n = Math.min(remaining, chunk.length);
+        this.buf.set(chunk.subarray(0, n), this.write);
         this.write += n;
 
         if (this.write >= this.buf.length) {
@@ -40,15 +40,12 @@ export class MicCap16k {
         console.log(`🎙️ MICCAP STOP | captured ${(this.write / this.sr).toFixed(2)}s`);
     }
 
-    take(): Float32Array | null {
-        if (!this.buf || !this.ready) return null;
-        const out = this.buf.subarray(0, this.write); // view, no copy
-        this.buf = null;
-        this.write = 0;
-        this.ready = false;
-        return out;
+    getBuffer() {
+        if (!this.buf) return null;
+        // Return only what was written
+        return this.buf.subarray(0, this.write);
     }
 }
 
-// ✅ singleton shared by main + audio pipeline
-export const micCap = new MicCap16k();
+// Export a singleton instance for global use
+export const micCap = new MicCap();

@@ -5,7 +5,7 @@ export class RingBuffer {
     public isFull: boolean = false;
 
     constructor(durationSeconds: number, sampleRate: number) {
-        this.size = durationSeconds * sampleRate; // e.g., 3 * 16000 = 48000
+        this.size = durationSeconds * sampleRate; // e.g., 2.0 * 22050 = 44100
         this.buffer = new Float32Array(this.size);
     }
 

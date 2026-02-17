@@ -12,10 +12,12 @@ from tensorflow import keras
 # -----------------------------
 # 🎚️ DEFAULTS
 # -----------------------------
-SR = 16000
-WINDOW_SEC_DEFAULT = 3.0
-HOP_SEC_DEFAULT = 1.5
-RMS_MIN_DEFAULT = 0.003
+SR = 22050
+WINDOW_SEC_DEFAULT = 2.0
+HOP_SEC_DEFAULT = 1.0  # 50% overlap for 2s window (optional but consistent)
+RMS_MIN_DEFAULT = 0.01  # match prepare_data.py filter for alignment
+RMS_MIN_RECITER = 0.01
+RMS_MIN_BG = 0.003
 
 
 # -----------------------------
@@ -67,9 +69,13 @@ def load_matrices(audio_config_path: Path) -> Matrices:
     )
 
 
-def extract_mfcc_image(chunk_16k: np.ndarray, m: Matrices) -> np.ndarray:
-    """Return MFCC image shape (40,186) from 3s @16k chunk (48000 samples)."""
-    frames = librosa.util.frame(chunk_16k, frame_length=512, hop_length=256).T  # (186,512)
+FRAME_LENGTH = 512
+HOP_LENGTH = 256
+
+
+def extract_mfcc_image(chunk: np.ndarray, m: Matrices) -> np.ndarray:
+    """Return MFCC image shape (40,T) from a chunk using frame=512 hop=256."""
+    frames = librosa.util.frame(chunk, frame_length=FRAME_LENGTH, hop_length=HOP_LENGTH).T  # (T,512)
     out = np.empty((frames.shape[0], 40), dtype=np.float32)
 
     for i, frame in enumerate(frames):
@@ -82,9 +88,10 @@ def extract_mfcc_image(chunk_16k: np.ndarray, m: Matrices) -> np.ndarray:
         mfcc = m.dct_matrix @ log_mel
         out[i, :] = mfcc
 
-    img = out.T  # (40,186)
-    if img.shape != (40, 186):
-        raise ValueError(f"Bad MFCC shape {img.shape}, expected (40,186)")
+    img = out.T  # (40,T)
+    expected_frames = 1 + (len(chunk) - FRAME_LENGTH) // HOP_LENGTH
+    if img.shape != (40, expected_frames):
+        raise ValueError(f"Bad MFCC shape {img.shape}, expected (40,{expected_frames})")
     return img
 
 
@@ -297,6 +304,8 @@ def evaluate_suite(
     win = int(round(window_sec * SR))
     hop = int(round(hop_sec * SR))
 
+    print(f"🔧 Eval config: SR={SR}, window={window_sec}s ({win} samples), hop={hop_sec}s ({hop} samples)")
+
     for expected_label, path in pairs:
         if expected_label not in label_to_idx:
             print(f"⚠️ Skipping {path}: folder '{expected_label}' not in reciters_map.json")
@@ -318,8 +327,9 @@ def evaluate_suite(
             chunk = audio[s: s + win]
             if chunk.shape[0] != win:
                 continue
+            rms_gate = RMS_MIN_BG if expected_label == "_background" else RMS_MIN_RECITER
 
-            if calculate_rms(chunk) < rms_min:
+            if calculate_rms(chunk) < rms_gate:
                 continue
 
             if apply_rms_norm:
@@ -336,7 +346,7 @@ def evaluate_suite(
                 break
 
         if not windows:
-            print(f"⚠️ {path.name}: 0 windows kept (rms_min={rms_min}).")
+            print(f"⚠️ {path.name}: 0 windows kept (rms_gate={rms_gate}).")
             continue
 
         X = np.stack(windows, axis=0).astype(np.float32)[..., np.newaxis]  # (N,40,186,1)
@@ -356,6 +366,29 @@ def evaluate_suite(
             confidence=confidence,
             windows_used=len(windows),
         ))
+
+    # ===== Background-specific metrics =====
+    if "_background" in label_to_idx:
+        bg_idx = label_to_idx["_background"]
+        yt = np.array(y_true, dtype=np.int64)
+        yp = np.array(y_pred, dtype=np.int64)
+
+        far = float(np.mean((yt == bg_idx) & (yp != bg_idx)))  # bg -> reciter
+        frr = float(np.mean((yt != bg_idx) & (yp == bg_idx)))  # reciter -> bg
+
+        rec_mask = (yt != bg_idx)
+        rec_only_acc = float(np.mean(yp[rec_mask] == yt[rec_mask])) if np.any(rec_mask) else 0.0
+
+        bg_mask = (yt == bg_idx)
+        bg_recall = float(np.mean(yp[bg_mask] == bg_idx)) if np.any(bg_mask) else 0.0
+
+        print("\n===== Background Metrics =====")
+        print(f"FAR (bg -> reciter): {far:.4f}")
+        print(f"FRR (reciter -> bg): {frr:.4f}")
+        print(f"Reciter-only acc:    {rec_only_acc:.4f}")
+        print(f"BG recall:           {bg_recall:.4f}")
+    else:
+        print("\n(no _background in reciters_map.json; skipping FAR/FRR)")
 
     metrics = compute_metrics(y_true, y_pred, labels)
     return metrics, results
@@ -435,7 +468,7 @@ def main():
                    help="Root folder containing golden/ and challenge/")
     p.add_argument("--suite", choices=["golden", "challenge", "both"], default="both")
 
-    p.add_argument("--model", default="models/qari_model.h5", help="Path to the model to evaluate")
+    p.add_argument("--model", default="models/qari_model.keras", help="Path to the model to evaluate")
     p.add_argument("--audio_config", default="../app/public/models/audio_config.json")
     p.add_argument("--reciters_map", default="../app/public/models/reciters_map.json")
     p.add_argument("--normalization", default="../app/public/models/normalization.json")

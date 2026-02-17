@@ -8,7 +8,6 @@ from sklearn.utils.class_weight import compute_class_weight
 from tensorflow import keras
 
 # Settings
-INPUT_SHAPE = (40, 186, 1)
 BATCH_SIZE = 64
 EPOCHS = 60
 
@@ -59,7 +58,7 @@ class SpecAugment(keras.layers.Layer):
 
 def train_model():
     print("⏳ Loading dataset...")
-    data = np.load("datasets/features.npz", allow_pickle=True)
+    data = np.load("models/features.npz", allow_pickle=True)
     X = data["X"]
     y = data["y"]
     groups = data["groups"]
@@ -76,7 +75,11 @@ def train_model():
         json.dump(labels_array, f)
 
     # 2) Reshape
-    X = X[..., np.newaxis]
+    if len(X.shape) == 3:
+        X = X[..., np.newaxis]
+        print(f"   Reshaped X to 4D: {X.shape}")
+    else:
+        print(f"   X is already 4D: {X.shape}")
 
     # 2.5) Sample weights (Clean=1.0, Dirty=0.4)
     # prepare_data saved: [clean, dirty, clean, dirty...]
@@ -93,6 +96,15 @@ def train_model():
 
     X = (X - mean) / std
 
+    INPUT_SHAPE = tuple(X.shape[1:])
+    print("✅ Using INPUT_SHAPE from features:", INPUT_SHAPE)
+
+    if INPUT_SHAPE[0] != 40 or INPUT_SHAPE[2] != 1:
+        raise ValueError(f"Unexpected feature shape {INPUT_SHAPE}, expected (40, T, 1).")
+
+    if INPUT_SHAPE[1] != 171:
+        print(f"⚠️ WARNING: width is {INPUT_SHAPE[1]} not 171. If intentional, align evaluator+app too.")
+
     with open(f"{model_output_dir}/normalization.json", "w") as f:
         json.dump({"mean": mean, "std": std}, f)
 
@@ -102,7 +114,7 @@ def train_model():
 
     X_train, X_test = X[train_idx], X[test_idx]
     y_train, y_test = y[train_idx], y[test_idx]
-    w_train, w_test = sample_weights[train_idx], sample_weights[test_idx]
+    w_train = sample_weights[train_idx]
 
     print("⚖️ Calculating class weights...")
     classes = np.unique(y_train)
@@ -115,8 +127,8 @@ def train_model():
     model = keras.Sequential([
         keras.Input(shape=INPUT_SHAPE),
 
-        # SpecAugment is optional; keep gentle because you already have dirty data
-        SpecAugment(freq_mask_param=3, time_mask_param=12),
+        # Increased to 8 to better simulate "muddy" or "thin" mobile mics
+        SpecAugment(freq_mask_param=8, time_mask_param=12),
 
         # Block 1: Conv -> BN -> ReLU
         keras.layers.Conv2D(32, (3, 3), padding="same", use_bias=False),
@@ -160,19 +172,19 @@ def train_model():
     for cls, weight in class_weights_dict.items():
         final_weights_train[y_train == cls] *= weight
 
-    final_weights_test = w_test.copy()
-    for cls, weight in class_weights_dict.items():
-        final_weights_test[y_test == cls] *= weight
-
     model.fit(
         X_train,
         y_train,
         sample_weight=final_weights_train,
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
-        validation_data=(X_test, y_test, final_weights_test),
+        validation_data=(X_test, y_test),
         callbacks=[early_stop, reduce_lr],
     )
+
+    # Save a reloadable Keras model file for evaluation/debugging (Keras 3 format)
+    model.save("models/qari_model.keras")
+    print("✅ Model saved to models/qari_model.keras")
 
     model.export("models/qari_model_export")
     print("✅ Model exported to models/qari_model_export")

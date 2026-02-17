@@ -16,7 +16,7 @@ export class AudioManager {
 
     // Configuration
     private config = {
-        targetSampleRate: 16000,
+        targetSampleRate: 22050,
         workletPath: "/processors/resampler-processor.js",
         latencyHint: (platform.isNative ? "playback" : "interactive") as AudioContextLatencyCategory
     };
@@ -25,6 +25,8 @@ export class AudioManager {
     private flags = {
         farFieldMode: false // Default: OFF / Purist Mode
     };
+
+    public onDataReceived: ((data: Float32Array) => void) | null = null;
 
     private constructor() {
         // Use the Typed Event
@@ -154,8 +156,10 @@ export class AudioManager {
                 this.worklet = null;
             }
 
+            this.onDataReceived = onDataReceived;
+
             this.worklet = new AudioWorkletNode(this._context, "resampler-processor");
-            this.worklet.port.onmessage = (e) => onDataReceived(e.data);
+            this.worklet.port.onmessage = (e) => this.onDataReceived?.(e.data);
 
             // Graph: Source -> Analyser (Visuals)
             source.connect(this.analyser!);

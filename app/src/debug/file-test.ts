@@ -1,6 +1,5 @@
 import {inferenceEngine} from "../model/inference-engine";
-import {downsampleBuffer} from "../features/custom-extractor.ts";
-import {decodePcmWav} from "./wav.ts";
+import {downsampleBuffer} from "../features/custom-extractor.ts"; // Ensure this function handles generic targets
 
 async function decodeFileToAudioBuffer(file: File): Promise<AudioBuffer> {
     const arrayBuf = await file.arrayBuffer();
@@ -26,85 +25,69 @@ function toMonoFloat32(buf: AudioBuffer): Float32Array {
     return out;
 }
 
-async function resampleTo16k(mono: Float32Array, inSR: number): Promise<Float32Array> {
-    if (inSR === 16000) return mono;
+// 🟢 Updated to 22050
+async function resampleToTarget(mono: Float32Array, inSR: number): Promise<Float32Array> {
+    const TARGET = 22050;
+    if (inSR === TARGET) return mono;
 
-    const length16k = Math.ceil(mono.length * 16000 / inSR);
-    const offline = new OfflineAudioContext(1, length16k, 16000);
+    const dur = mono.length / inSR;
+    const len = Math.floor(dur * TARGET);
+    const offlineCtx = new OfflineAudioContext(1, len, TARGET);
 
-    const srcBuf = offline.createBuffer(1, mono.length, inSR);
-    srcBuf.copyToChannel(mono as any, 0);
+    const buf = offlineCtx.createBuffer(1, mono.length, inSR);
+    buf.copyToChannel(mono as any, 0);
 
-    const src = offline.createBufferSource();
-    src.buffer = srcBuf;
-    src.connect(offline.destination);
+    const src = offlineCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(offlineCtx.destination);
     src.start();
 
-    const rendered = await offline.startRendering();
-    return rendered.getChannelData(0).slice();
+    const rendered = await offlineCtx.startRendering();
+    return rendered.getChannelData(0);
 }
 
 export async function runFileTest(file: File) {
-    const ok = await inferenceEngine.setup();
-    if (!ok) throw new Error("Model setup failed.");
+    console.log(`📂 FILETEST: Reading ${file.name} (${file.size} bytes)...`);
 
-    // ✅ FAST-PATH: miccap_16k WAVs should NOT go through WebAudio decode/resample
-    if (file.name.startsWith("miccap_16k_") && file.type.includes("wav")) {
-        const {samples, sampleRate} = await decodePcmWav(file);
-
-        const dur = samples.length / sampleRate;
-        console.log(`📁 FILETEST loaded (direct WAV): "${file.name}" | inSR=${sampleRate}Hz | dur=${dur.toFixed(2)}s`);
-
-        if (sampleRate !== 16000) {
-            console.warn(`⚠️ Expected 16k for miccap WAV, got ${sampleRate}. Will resample.`);
-            // fall back to your existing pipeline if it ever happens
-        } else {
-            await runScan(samples);
-            console.log("✅ FILETEST done.");
-            return;
-        }
-    }
-
-    // 1. Decode File (general path)
     const buf = await decodeFileToAudioBuffer(file);
     const mono = toMonoFloat32(buf);
 
-    // 2. Downsample (Unified Method)
-    let sig16k: Float32Array;
+    let sigTarget: Float32Array;
     try {
-        sig16k = await resampleTo16k(mono, buf.sampleRate);
+        sigTarget = await resampleToTarget(mono, buf.sampleRate);
     } catch (e) {
-        console.warn("OfflineAudioContext resample failed, falling back to linear resample:", e);
-        sig16k = downsampleBuffer(mono, buf.sampleRate, 16000);
+        console.warn("OfflineAudioContext resample failed, falling back to manual resample:", e);
+        // Assuming downsampleBuffer in custom-extractor can handle target rate
+        sigTarget = downsampleBuffer(mono, buf.sampleRate, 22050);
     }
 
-    const dur = sig16k.length / 16000;
+    const dur = sigTarget.length / 22050;
     console.log(`📁 FILETEST loaded: "${file.name}" | inSR=${buf.sampleRate}Hz | dur=${dur.toFixed(2)}s`);
 
-    await runScan(sig16k);
+    await runScan(sigTarget);
     console.log("✅ FILETEST done.");
 
-    async function runScan(sig16k: Float32Array) {
-        const dur = sig16k.length / 16000;
+    async function runScan(signal: Float32Array) {
+        const dur = signal.length / 22050;
         const scanAll = confirm("Scan the whole file (every 1.0s window)?\nCancel = test 3 windows only.");
 
         if (scanAll) {
             const step = 1.0;
-            for (let s = 0; s + 3 <= dur; s += step) {
-                await inferenceEngine.predictFromSignal(sig16k, {
+            for (let s = 0; s + 2 <= dur; s += step) { // +2 for 2.0s window
+                await inferenceEngine.predictFromSignal(signal, {
                     startSec: s,
-                    windowSec: 3,
+                    windowSec: 2, // 🟢 2.0s window
                     log: true,
                     dispatchToUI: true
                 });
             }
         } else {
-            const mid = Math.max(0, dur / 2 - 1.5);
-            const end = Math.max(0, dur - 3);
-            for (const s of [0, mid, end]) {
-                await inferenceEngine.predictFromSignal(sig16k, {
+            const mid = Math.max(0, dur / 2 - 1);
+            const windows = [0, mid, Math.max(0, dur - 2)];
+            for (const s of windows) {
+                await inferenceEngine.predictFromSignal(signal, {
                     startSec: s,
-                    windowSec: 3,
+                    windowSec: 2, // 🟢 2.0s window
                     log: true,
                     dispatchToUI: true
                 });

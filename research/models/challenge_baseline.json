@@ -1,17 +1,17 @@
 {
   "meta": {
-    "root_dir": "audio_test_sets",
+    "root_dir": "datasets/audio_test_sets",
     "suite": "challenge",
-    "model": "qari_model.h5",
+    "model": "models/qari_model.keras",
     "audio_config": "../app/public/models/audio_config.json",
     "reciters_map": "../app/public/models/reciters_map.json",
     "normalization": "../app/public/models/normalization.json",
-    "baseline_golden": "golden_baseline.json",
-    "baseline_challenge": "challenge_baseline.json",
-    "window_sec": 3.0,
-    "hop_sec": 1.5,
+    "baseline_golden": "models/golden_baseline.json",
+    "baseline_challenge": "models/challenge_baseline.json",
+    "window_sec": 2.0,
+    "hop_sec": 1.0,
     "max_windows": 40,
-    "rms_min": 0.003,
+    "rms_min": 0.01,
     "update_baseline": true,
     "strict": false,
     "no_rms_norm": false,
@@ -131,6 +131,12 @@
         "support": 1.0
       },
       "yasser_al_dossary": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 0.0
+      },
+      "_background": {
         "precision": 0.0,
         "recall": 0.0,
         "f1": 0.0,

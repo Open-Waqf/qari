@@ -178,7 +178,7 @@ class InferenceEngine {
     };
 
     private constructor() {
-        this.buffer = new RingBuffer(3, 16000);
+        this.buffer = new RingBuffer(2, 22050);
     }
 
     static getInstance(): InferenceEngine {
@@ -509,8 +509,8 @@ class InferenceEngine {
     ) {
         if (!this.model) throw new Error('Model not loaded.');
 
-        const sr = 16000;
-        const windowSec = opts?.windowSec ?? 3;
+        const sr = 22050;
+        const windowSec = opts?.windowSec ?? 2;
         const win = Math.max(1, Math.floor(windowSec * sr));
         const startSec = Math.max(0, opts?.startSec ?? 0);
         const start = Math.floor(startSec * sr);

@@ -2,7 +2,7 @@ import numpy as np
 import scipy.io.wavfile as wav
 
 # Settings
-SR = 16000
+SR = 22050
 DURATION = 2.0
 FREQ = 440.0 # A4 Note
 

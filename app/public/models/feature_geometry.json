@@ -1,0 +1,7 @@
+{
+  "sr": 22050,
+  "window_sec": 2.0,
+  "frame_length": 512,
+  "hop_length": 256,
+  "n_mfcc": 40
+}

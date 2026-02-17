@@ -50,21 +50,29 @@ export class DebugPanel {
 
         const dspGrid = document.createElement("div");
         dspGrid.className = "debug-grid";
-        this.btnRms = this.createToggle("RMS", () => inferenceEngine.toggleRmsNormalize());
-        this.btnPre = this.createToggle("Pre", () => inferenceEngine.togglePreEmphasis());
-        this.btnCmvn = this.createToggle("CMVN", () => inferenceEngine.toggleCMVN());
+        this.btnRms = this.createToggle("RMS", () => {
+            inferenceEngine.toggleRmsNormalize();
+            this.log(`RMS: ${inferenceEngine.isRmsNormalizeEnabled()}`)
+        });
+        this.btnPre = this.createToggle("Pre", () => {
+            inferenceEngine.togglePreEmphasis();
+            this.log(`Pre: ${inferenceEngine.isPreEmphasisEnabled()}`)
+        });
+        this.btnCmvn = this.createToggle("CMVN", () => {
+            inferenceEngine.toggleCMVN();
+            this.log(`CMVN: ${inferenceEngine.isCmvnEnabled()}`);
+        });
         this.btnFar = this.createToggle("Far", () => {
             const am = audioManager as any;
             if (am.flags) {
                 am.flags.farFieldMode = !am.flags.farFieldMode;
                 this.log(`FarField: ${am.flags.farFieldMode}`);
-                // Re-init with current mode
+
                 if (am.isRunning) {
-                    const oldCb = am.onDataReceived;
+                    const cb = am.onDataReceived;
                     am.stop();
                     setTimeout(() => {
-                        am.onDataReceived = oldCb; // Restore callback
-                        am.start();
+                        if (cb) am.start(cb);
                     }, 300);
                 }
             }
@@ -152,6 +160,9 @@ export class DebugPanel {
 
         const eng = inferenceEngine as any;
         if (eng.lastInferenceTime) document.getElementById("dbg-lat")!.innerText = eng.lastInferenceTime.toFixed(1);
+
+        document.getElementById("dbg-back")!.innerText =
+            eng.gate?.noiseFloor != null ? eng.gate.noiseFloor.toFixed(5) : "--";
 
         // 2. Visualizer
         if (audioManager.analyser) {

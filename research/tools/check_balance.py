@@ -12,7 +12,7 @@ def balanced_weight(total_samples: int, num_classes: int, class_count: int) -> f
 
 def main():
     ap = argparse.ArgumentParser(description="Inspect class balance + weights inside features.npz")
-    ap.add_argument("--file", default="../models/features.npz", help="Path to features.npz")
+    ap.add_argument("--file", default="models/features.npz", help="Path to features.npz")
     ap.add_argument("--cap", type=int, default=None, help="If provided, flag classes with count == cap")
     ap.add_argument("--show-keys", action="store_true", help="Print NPZ keys")
     args = ap.parse_args()
@@ -24,6 +24,9 @@ def main():
         raise SystemExit("features.npz must contain at least keys: 'y' and 'mapping'")
 
     y = d["y"]
+    X = d["X"]
+    print("X.shape =", X.shape)  # should be (N, 40, 186, 1)
+    print("width =", X.shape[2])
     mapping = d["mapping"].item()  # name -> idx
     inv = {int(v): str(k) for k, v in mapping.items()}
 

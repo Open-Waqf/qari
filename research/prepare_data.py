@@ -6,22 +6,31 @@ import librosa
 import numpy as np
 from audiomentations import Compose, AddGaussianNoise, HighPassFilter, LowPassFilter, Gain
 
-# Settings
-SR = 16000
-DURATION = 3.0
-SAMPLES_PER_CHUNK = int(SR * DURATION)  # 48000 samples
+# ==========================================
+# ⚡ CORE SETTINGS (Synced with App Parity)
+# ==========================================
+SR = 22050  # 🟢 CHANGED: Must match App (was 16000)
+DURATION = 2.0  # 🟢 CHANGED: Must match App (was 3.0)
+SAMPLES_PER_CHUNK = int(SR * DURATION)  # 44100 samples
 DATA_PATH = "datasets/audio"
-OUTPUT_PATH = "datasets/features.npz"
+OUTPUT_PATH = "models/features.npz"
 APP_MODELS_DIR = Path("../app/public/models")
 RECITERS_MAP_PATH = APP_MODELS_DIR / "reciters_map.json"
+
+FRAME_LENGTH = 512
+HOP_LENGTH = 256
+EXPECTED_FRAMES = 1 + (SAMPLES_PER_CHUNK - FRAME_LENGTH) // HOP_LENGTH
+
+RMS_MIN_RECITER = 0.01
+RMS_MIN_BG = 0.003
+
 # -----------------------------
 # SAFE CAPPING (deterministic)
 # -----------------------------
-CAP_MINUTES_DEFAULT = None  # None = no cap for normal classes
+# 🟢 CHANGED: Set a default cap to stop "Bullies" automatically
+CAP_MINUTES_DEFAULT = 15.0
 CAP_MINUTES_BY_CLASS = {
-    "_background": 20.0,  # keep your 20 min target
-    "raad_al_kurdi": 25.0,  # cap the bully
-    "ahmed_talib_hameed": 25.0,  # optional (barely high)
+    "_background": 60.0
 }
 
 CAP_SEED = 42
@@ -35,11 +44,9 @@ augment = Compose([
     AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.005, p=0.3),
 
     # HighPass: Cuts "Mud" and "Rumble" (80-300Hz)
-    # This prevents the "Fares Abbad" confusion caused by deep bass
     HighPassFilter(min_cutoff_freq=80, max_cutoff_freq=300, p=0.5),
 
     # LowPass: Cuts "Hiss" but KEEPS Voice Clarity (6000Hz+)
-    # 🛑 CRITICAL: Do not go below 6000Hz, or Ghamdi will sound muffled
     LowPassFilter(min_cutoff_freq=6000, max_cutoff_freq=7800, p=0.3),
 ])
 
@@ -90,7 +97,13 @@ def load_or_update_reciters_map(data_path: str) -> list[str]:
 
 
 def load_matrices():
-    with open("../app/public/models/audio_config.json", "r") as f:
+    # Robust path finding
+    config_path = "../app/public/models/audio_config.json"
+    if not os.path.exists(config_path):
+        # Fallback if running from root
+        config_path = "app/public/models/audio_config.json"
+
+    with open(config_path, "r") as f:
         config = json.load(f)
     return {
         "dft_real": np.array(config["dft_real"], dtype=np.float32),
@@ -118,15 +131,21 @@ def extract_features_matrix(frame_512: np.ndarray) -> np.ndarray:
     return mfcc
 
 
-def _mfcc_image_from_chunk(chunk_48k: np.ndarray) -> np.ndarray:
-    # chunk_48k: (48000,)
-    frames = librosa.util.frame(chunk_48k, frame_length=512, hop_length=256).T  # (186, 512)
-    mfccs = [extract_features_matrix(f) for f in frames]  # list of (40,)
-    img = np.array(mfccs, dtype=np.float32).T  # (40, 186)
+def _mfcc_image_from_chunk(chunk: np.ndarray) -> np.ndarray:
+    # chunk: (44100,) approx
+    frames = librosa.util.frame(chunk, frame_length=FRAME_LENGTH, hop_length=HOP_LENGTH).T
+    mfccs = [extract_features_matrix(f) for f in frames]
+    img = np.array(mfccs, dtype=np.float32).T
 
-    # Guardrail (should always be true)
-    if img.shape != (40, 186):
-        raise ValueError(f"Bad MFCC shape: {img.shape} (expected (40, 186))")
+    if img.shape[1] != EXPECTED_FRAMES:
+        raise ValueError(f"MFCC width mismatch: got {img.shape[1]}, expected {EXPECTED_FRAMES}. Check SR/DURATION.")
+
+    # Guardrail (should always be true for 2.0s @ 22050)
+    # 44100 / 256 hop ~= 171 frames approx.
+    # We won't hard crash on shape unless it's zero,
+    # but let's ensure it's (40, Time)
+    if img.shape[0] != 40:
+        raise ValueError(f"Bad MFCC shape: {img.shape} (expected (40, T))")
 
     return img
 
@@ -140,7 +159,7 @@ def process_dataset():
 
     file_counter = 0
     step = SAMPLES_PER_CHUNK // 2  # 50% overlap
-    hop_sec = step / SR  # 1.5s
+    hop_sec = step / SR
 
     def minutes_to_max_windows(minutes: float) -> int:
         return int((minutes * 60.0) / hop_sec)
@@ -154,7 +173,7 @@ def process_dataset():
     for r in reciters:
         cap = max_windows_by_class[r]
         if cap is not None:
-            print(f"   - {r}: {cap} windows (~{CAP_MINUTES_BY_CLASS.get(r)} min)")
+            print(f"   - {r}: {cap} windows (~{CAP_MINUTES_BY_CLASS.get(r, CAP_MINUTES_DEFAULT)} min)")
 
     for reciter in reciters:
         print(f"Processing {reciter}...")
@@ -208,7 +227,8 @@ def process_dataset():
 
                 # RMS Check (unchanged)
                 rms = float(np.sqrt(np.mean(chunk ** 2)))
-                if rms < 0.01:
+                rms_min = RMS_MIN_BG if reciter == "_background" else RMS_MIN_RECITER
+                if rms < rms_min:
                     continue
 
                 try:
@@ -253,6 +273,9 @@ def process_dataset():
     X = np.array(X, dtype=np.float32)
     y = np.array(y, dtype=np.int64)
     groups = np.array(groups, dtype=np.int64)
+
+    # 🟢 ADDED: Expand dims for CNN (Height, Width, 1)
+    X = X[..., np.newaxis]
 
     # Pairing sanity check for training normalization logic (X[::2] clean)
     if X.shape[0] % 2 != 0:

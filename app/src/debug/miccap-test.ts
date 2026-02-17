@@ -14,30 +14,28 @@ function entropyNormalized(probs: number[]) {
     return e / Math.log(N);
 }
 
-export async function runMicCapTest(signal16k: Float32Array) {
-    const SR = 16000;
-    const WIN = 3 * SR;
-    const HOP = 1 * SR;
+export async function runMicCapTest(signal: Float32Array) {
+    const SR = 22050; // 🟢 Updated
+    const WIN = 2 * SR; // 🟢 2.0s window
+    const HOP = 1 * SR; // 1.0s hop
 
-    console.log(`🏁 MICCAP | dur=${(signal16k.length / SR).toFixed(2)}s`);
+    console.log(`🏁 MICCAP | dur=${(signal.length / SR).toFixed(2)}s`);
 
     let sumProbs: number[] | null = null;
     let wSum = 0;
 
-    for (let start = 0; start + WIN <= signal16k.length; start += HOP) {
+    for (let start = 0; start + WIN <= signal.length; start += HOP) {
         const startSec = start / SR;
-        const window = signal16k.subarray(start, start + WIN);
+        const window = signal.subarray(start, start + WIN);
         const r = rmsOf(window);
 
         // IMPORTANT: mic often comes in quieter than you think
-        if (r < 0.003) {
-            console.log(`🏁 MICCAP | start=${startSec.toFixed(2)}s rms=${r.toFixed(4)} SKIP(silent)`);
-            continue;
-        }
+        if (r < 0.005) continue;
 
+        // 🟢 Using 2s window
         const result = await inferenceEngine.predictFromSignal(window, {
             startSec: 0,
-            windowSec: 3,
+            windowSec: 2,
             log: false,
             dispatchToUI: false,
             independent: true,
@@ -69,10 +67,5 @@ export async function runMicCapTest(signal16k: Float32Array) {
     const avg = sumProbs.map(v => v / wSum);
     const entFinal = entropyNormalized(avg);
 
-    // If your predictFromSignal already returns formatted names in raw.top3, you can just compute top3 here
-    // using engine labels if exposed; otherwise use a simple “best index” log:
-    const bestIdx = avg.reduce((bi, v, i) => (v > avg[bi] ? i : bi), 0);
-    const bestScore = avg[bestIdx];
-
-    console.log(`🏁 MICCAP FINAL | avg ent=${entFinal.toFixed(3)} | bestIdx=${bestIdx} score=${(bestScore * 100).toFixed(1)}%`);
+    console.log(`✅ MICCAP SEQUENCE DONE | Avg Entropy: ${entFinal.toFixed(3)}`);
 }

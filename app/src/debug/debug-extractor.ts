@@ -2,6 +2,7 @@ import * as tf from '@tensorflow/tfjs';
 import {audioManager} from '../core/audio-manager';
 import {customExtractor} from '../features/custom-extractor';
 
+//run in console await window.checkParity("/test_sine.wav");
 export async function checkAudioParity(input: string | number[]) {
 
     await tf.ready();
