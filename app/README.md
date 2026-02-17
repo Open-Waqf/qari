@@ -8,7 +8,7 @@ neural network inference.
 The app mimics the Python training pipeline inside the browser using **WebAssembly** and **WebGL**:
 
 1. **The Ear (Microphone):** Captures raw audio at 48kHz.
-2. **The Resampler (AudioWorklet):** Downsamples audio to 16kHz in a separate thread to match the AI's training data.
+2. **The Resampler (AudioWorklet):** Downsamples audio to 22kHz in a separate thread to match the AI's training data.
 3. **The Visualizer (Canvas):** Draws the raw waveform in real-time.
 4. **The Extractor (Custom FFT):** Converts 3-second audio clips into Spectrogram images (40x186 pixels) using custom
    matrix math.
@@ -60,19 +60,19 @@ flags.
 * **Purpose:** Hear/test what the browser + mic capture produces *before* the worklet pipeline.
 
 
-* **Shift+M**: MICCAP capture of **post-worklet 16k PCM** chunks
+* **Shift+M**: MICCAP capture of **post-worklet 22k PCM** chunks
 * **Action:** First press starts capture (8s). Second press stops/saves.
-* **Output:** `miccap_16k_<ts>.wav` (PCM16 WAV @ 16k). Also runs `runMicCapTest()` on the captured signal.
+* **Output:** `miccap_22k_<ts>.wav` (PCM16 WAV @ 22k). Also runs `runMicCapTest()` on the captured signal.
 * **Purpose:** Capture exactly what the model receives in the live pipeline.
 
 ### File-based evaluation
 
 * **Shift+T**: FILETEST – run inference on a selected audio file
-* **Action:** Decodes file -> converts to mono -> resamples to 16k -> scans 3s windows.
-* **Note:** If the selected file is a direct 16k WAV, it uses the direct WAV fast-path.
+* **Action:** Decodes file -> converts to mono -> resamples to 22k -> scans 3s windows.
+* **Note:** If the selected file is a direct 22k WAV, it uses the direct WAV fast-path.
 
 ### Pipeline simulation
 
-* **Shift+L**: LOOPBACK – play a file through a forced 48k AudioContext + worklet, collect chunks, downsample to 16k,
+* **Shift+L**: LOOPBACK – play a file through a forced 48k AudioContext + worklet, collect chunks, downsample to 22k,
   then run `runMicCapTest()`.
 * **Purpose:** Stress-test resampling / buffering like live mode.

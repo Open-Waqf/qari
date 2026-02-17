@@ -29,7 +29,6 @@ export class AudioManager {
     public onDataReceived: ((data: Float32Array) => void) | null = null;
 
     private constructor() {
-        // Use the Typed Event
         window.addEventListener(EVENTS.APP_STATE_CHANGE, (e: Event) => {
             const {isActive} = (e as CustomEvent<AppStatePayload>).detail;
             if (!isActive) {
@@ -77,33 +76,24 @@ export class AudioManager {
 
         try {
             // 1. Stream Acquisition
-            // We ask for the stream FIRST to see what the hardware supports
+            // 🟢 FIX: Removed 'sampleRate' constraint. Let HW run native (44.1/48k).
+            // This prevents OverconstrainedError on mobiles.
             this._stream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        // Standard Constraints (Keep these)
-                        channelCount: 1,
-                        sampleRate: this.config.targetSampleRate,
+                audio: {
+                    channelCount: 1,
 
-                        // 🛑 LOGIC UPDATE:
-                        // If farFieldMode is OFF (we want Raw Audio), we must forcefully disable
-                        // the Android processing. Standard 'false' is not enough.
+                    echoCancellation: this.flags.farFieldMode,
+                    noiseSuppression: this.flags.farFieldMode,
+                    autoGainControl: this.flags.farFieldMode,
 
-                        echoCancellation: this.flags.farFieldMode,
-                        noiseSuppression: this.flags.farFieldMode,
-                        autoGainControl: this.flags.farFieldMode,
-
-                        // ☢️ ANDROID "NUCLEAR" OPTIONS (Ignored by Desktop/iOS, Vital for Android)
-                        // These force the underlying engine to bypass hardware DSP.
-                        // @ts-ignore - TypeScript doesn't know these vendor props
-                        googEchoCancellation: this.flags.farFieldMode,
-                        googAutoGainControl: this.flags.farFieldMode,
-                        googNoiseSuppression: this.flags.farFieldMode,
-                        googHighpassFilter: this.flags.farFieldMode, // ⚠️ CRITICAL: Stops bass cut
-                        googAudioMirroring: false,
-                    }
+                    // @ts-ignore - Android "Nuclear" Options
+                    googEchoCancellation: this.flags.farFieldMode,
+                    googAutoGainControl: this.flags.farFieldMode,
+                    googNoiseSuppression: this.flags.farFieldMode,
+                    googHighpassFilter: this.flags.farFieldMode,
+                    googAudioMirroring: false,
                 }
-            )
-            ;
+            });
 
             const track = this._stream.getAudioTracks()[0];
             const settings = track.getSettings();
@@ -111,8 +101,7 @@ export class AudioManager {
 
             console.log("🎛️ Mic Hardware Settings:", settings);
 
-            // 2. Context Reconciliation (The "Parity" Guard)
-            // If we have an old context that doesn't match the new mic, kill it.
+            // 2. Context Reconciliation
             if (this._context && trackSr && this._context.sampleRate !== trackSr) {
                 console.warn(`⚠️ Mismatch! Context: ${this._context.sampleRate}, Mic: ${trackSr}. Recreating...`);
                 await this._context.close();
@@ -120,23 +109,22 @@ export class AudioManager {
                 this.isModuleLoaded = false;
             }
 
-            // 3. Context Creation (If needed)
+            // 3. Context Creation
             if (!this._context) {
                 const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
                 this._context = new AudioContextClass({
                     latencyHint: this.config.latencyHint,
-                    // 🛑 CRITICAL: Match mic rate exactly to prevent OS-level glitches
+                    // Match the mic exactly to prevent OS-level resampling glitches
                     ...(trackSr ? {sampleRate: trackSr} : {})
                 });
                 this.analyser = this._context.createAnalyser();
             }
 
-            // 4. Resume (Mobile Requirement)
             if (this._context.state === "suspended") {
                 await this._context.resume();
             }
 
-            // 5. Worklet Injection
+            // 4. Worklet Injection
             if (!this.isModuleLoaded) {
                 try {
                     await this._context.audioWorklet.addModule(this.config.workletPath);
@@ -147,10 +135,9 @@ export class AudioManager {
                 }
             }
 
-            // 6. Build Graph
+            // 5. Build Graph
             const source = this._context.createMediaStreamSource(this._stream);
 
-            // Reset old worklet node if exists
             if (this.worklet) {
                 this.worklet.disconnect();
                 this.worklet = null;
@@ -161,12 +148,10 @@ export class AudioManager {
             this.worklet = new AudioWorkletNode(this._context, "resampler-processor");
             this.worklet.port.onmessage = (e) => this.onDataReceived?.(e.data);
 
-            // Graph: Source -> Analyser (Visuals)
+            // Graph: Source -> Analyser -> Worklet -> Mute -> Dest
             source.connect(this.analyser!);
-            // Graph: Source -> Worklet (Processing)
             source.connect(this.worklet);
 
-            // Graph: Worklet -> Mute -> Destination (Keep graph alive)
             const mute = this._context.createGain();
             mute.gain.value = 0;
             this.worklet.connect(mute).connect(this._context.destination);
@@ -177,7 +162,7 @@ export class AudioManager {
 
         } catch (error) {
             console.error("🚨 AudioManager Start Failed:", error);
-            this.stop(); // Cleanup if anything failed
+            this.stop();
         }
     }
 
@@ -190,13 +175,10 @@ export class AudioManager {
             this._stream.getTracks().forEach(t => t.stop());
             this._stream = null;
         }
-        // Optional: Keep context alive for faster restart, or close it to save battery.
-        // Closing is safer for mobile.
         if (this._context) {
             this._context.close();
             this._context = null;
         }
-
         this.isRunning = false;
         this.isModuleLoaded = false;
         console.log("🛑 Microphone Hardware Released.");

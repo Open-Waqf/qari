@@ -1,6 +1,6 @@
 import * as tf from '@tensorflow/tfjs';
 import {audioManager} from '../core/audio-manager';
-import {customExtractor} from '../features/custom-extractor';
+import {customExtractor, downsampleBuffer} from '../features/custom-extractor';
 
 //run in console await window.checkParity("/test_sine.wav");
 export async function checkAudioParity(input: string | number[]) {
@@ -30,8 +30,7 @@ export async function checkAudioParity(input: string | number[]) {
         // Note: Your extractor expects 22050 input.
         if (audioBuffer.sampleRate !== 22050) {
             console.warn("⚠️ Parity file is not 22050Hz. Results may drift.");
-            // You can call downsampleBuffer here if you want to be strict
-            // rawData = downsampleBuffer(rawData, audioBuffer.sampleRate, 22050);
+            rawData = downsampleBuffer(rawData, audioBuffer.sampleRate, 22050) as any;
         }
 
         // Slice first frame (512 samples) for direct comparison

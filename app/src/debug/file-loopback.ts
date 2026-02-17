@@ -44,7 +44,6 @@ export async function runFileLoopback(file: File) {
     src.buffer = monoBuf;
 
     const chunks: Float32Array[] = [];
-    worklet.port.onmessage = (e) => chunks.push(e.data as Float32Array);
 
     let first = true;
     worklet.port.onmessage = (e) => {
@@ -76,14 +75,14 @@ export async function runFileLoopback(file: File) {
     console.log(`🔁 Raw Collected: ${rawSignal.length} samples (Rate: ${ctx.sampleRate})`);
 
     // 3. DOWNSAMPLE (The Fix!)
-    // We must manually convert 48k -> 16k, just like the live engine does.
-    const sig16k = rawSignal;
+    // We must manually convert 48k -> 22k, just like the live engine does.
+    const sig = rawSignal;
 
-    console.log(`✅ worklet output dur=${(sig16k.length / 16000).toFixed(2)}s @16k`);
-    await runMicCapTest(sig16k);
+    console.log(`✅ worklet output dur=${(sig.length / 22050).toFixed(2)}s @22k`);
+    await runMicCapTest(sig);
 
-    console.log(`📉 Downsampled to: ${sig16k.length} samples @ 16k`);
+    console.log(`📉 Downsampled to: ${sig.length} samples @ 22k`);
 
-    await runMicCapTest(sig16k);
+    await runMicCapTest(sig);
     console.log("✅ LOOPBACK done.");
 }

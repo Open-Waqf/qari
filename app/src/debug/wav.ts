@@ -59,13 +59,12 @@ export function downloadBlob(blob: Blob, filename: string) {
     a.href = url;
     a.download = filename;
     a.click();
-    // Revoke after a delay to ensure the browser has started the download
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /**
- * Decodes a raw PCM WAV file.
- * Required for the 'miccap' Fast-Path to detect if a file is 16k or 22k.
+ * Decodes WAV files (PCM 16/24/32-bit or IEEE Float 32-bit).
+ * Returns { samples, sampleRate } for the 22k fast-path check.
  */
 export async function decodePcmWav(file: File): Promise<{ samples: Float32Array; sampleRate: number }> {
     const buf = await file.arrayBuffer();
@@ -103,18 +102,49 @@ export async function decodePcmWav(file: File): Promise<{ samples: Float32Array;
     }
 
     if (fmtOff < 0 || dataOff < 0) throw new Error("Missing fmt/data chunk");
-    if (audioFormat !== 1) throw new Error(`Unsupported WAV format ${audioFormat} (need PCM)`);
-    if (bits !== 16) throw new Error(`Unsupported bitsPerSample=${bits} (need 16)`);
 
-    const numSamples = dataSize / (channels * (bits / 8));
+    // 🟢 UPGRADE: Support Float (3) and PCM (1)
+    if (audioFormat !== 1 && audioFormat !== 3) {
+        throw new Error(`Unsupported WAV format ${audioFormat} (only PCM=1 or Float=3)`);
+    }
+
+    // 🟢 UPGRADE: Support 16, 24, 32 bit depths
+    if (![16, 24, 32].includes(bits)) {
+        throw new Error(`Unsupported bitsPerSample=${bits} (need 16, 24, or 32)`);
+    }
+
+    const bytesPerSample = bits / 8;
+    const numSamples = Math.floor(dataSize / (channels * bytesPerSample));
     const out = new Float32Array(numSamples);
 
     let p = dataOff;
-    const stride = channels * 2; // 2 bytes per sample
+    const stride = channels * bytesPerSample;
+
+    // Decoder Loop
     for (let i = 0; i < numSamples; i++, p += stride) {
-        // We take the first channel if stereo, or the only channel if mono
-        const s = view.getInt16(p, true);
-        out[i] = s / 32768.0;
+        let val = 0;
+
+        if (audioFormat === 3 && bits === 32) {
+            // 32-bit Float
+            val = view.getFloat32(p, true);
+        } else if (bits === 16) {
+            // 16-bit PCM
+            val = view.getInt16(p, true) / 32768.0;
+        } else if (bits === 24) {
+            // 24-bit PCM (read 3 bytes as int)
+            const b0 = view.getUint8(p);
+            const b1 = view.getUint8(p + 1);
+            const b2 = view.getUint8(p + 2);
+            let raw = (b0 | (b1 << 8) | (b2 << 16));
+            // Sign extension
+            if (raw & 0x800000) raw |= 0xFF000000;
+            val = raw / 8388608.0;
+        } else if (bits === 32) {
+            // 32-bit PCM
+            val = view.getInt32(p, true) / 2147483648.0;
+        }
+
+        out[i] = val;
     }
 
     return {samples: out, sampleRate};

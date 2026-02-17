@@ -54,7 +54,10 @@ class InferenceEngine {
     // --- Dependencies ---
     private model: tf.GraphModel | null = null;
     private labels: string[] = [];
-    private normalization = {mean: 0, std: 1};
+    private normalization = {
+        mean: -0.5885211229324341,
+        std: 5.6245293617248535
+    };
     private buffer: RingBuffer;
 
     private gateScratch: Float32Array | null = null;
@@ -193,28 +196,31 @@ class InferenceEngine {
     async setup(): Promise<boolean> {
         try {
             await forceWasmBackend(this.isDebug);
-
             await customExtractor.loadConfig();
             this.model = await tf.loadGraphModel('/models/tfjs_model/model.json');
 
             const res = await fetch('/models/reciters_map.json');
+            if (!res.ok) throw new Error(`Reciters map missing (${res.status})`);
             this.labels = await res.json();
 
-            try {
-                const normRes = await fetch('/models/normalization.json');
-                if (normRes.ok) this.normalization = await normRes.json();
-            } catch {
-                console.warn('Using default stats');
+            // 🟢 HARD-FAIL: Ensure normalization is loaded and valid
+            const normRes = await fetch('/models/normalization.json');
+            if (!normRes.ok) {
+                throw new Error(`CRITICAL: normalization.json missing (Status: ${normRes.status})`);
             }
+
+            const stats = await normRes.json();
+            if (!Number.isFinite(stats.mean) || !Number.isFinite(stats.std)) {
+                throw new Error("CRITICAL: Normalization stats contain non-finite values.");
+            }
+            this.normalization = stats;
 
             return !!this.model;
         } catch (e) {
             console.error('Brain Offline:', e);
             return false;
         } finally {
-            if (this.isDebug) {
-                this.logConfigStatus();
-            }
+            if (this.isDebug) this.logConfigStatus();
         }
     }
 
@@ -357,10 +363,8 @@ class InferenceEngine {
             const batch = input.expandDims(0);
 
             // B. Normalization (ALWAYS Apply this!)
-            const mean = Number.isFinite(this.normalization.mean) ? this.normalization.mean : -0.77;
-            const stdRaw = Number.isFinite(this.normalization.std) ? this.normalization.std : 5.20;
-            const std = Math.max(stdRaw, 1e-6);
-            const normalized = batch.sub(mean).div(std);
+            const {mean, std} = this.normalization;
+            const normalized = batch.sub(mean).div(Math.max(std, 1e-6));
 
             // 🧠 DEBUG: Model Input Stats (Should be ~0.0 and ~1.0)
             if (log) {
@@ -383,11 +387,11 @@ class InferenceEngine {
     handleIncomingAudio(rawChunk: Float32Array) {
         // ✅ Only log if debug mode is active
         if (this.isDebug && this.debug.lastRateLogTime === 0) {
-            console.log(`📦 chunkLen=${rawChunk.length} (expect ~4096 @16k)`);
+            console.log(`📦 chunkLen=${rawChunk.length} (expect 4096 @22k)`);
             this.debug.lastRateLogTime = 1;
         }
 
-        // 🛑 TRUST WORKLET: It delivers 16k
+        // 🛑 TRUST WORKLET: It delivers 22050
         const chunk = rawChunk;
 
         // 🛑 PARITY: Filter only for GATE, not for FEATURES
@@ -450,7 +454,7 @@ class InferenceEngine {
         this.gate.silenceCounter = 0;
         this.debug.written++;
 
-        // 🛑 PARITY: Write RAW 16k to buffer (Unfiltered)
+        // 🛑 PARITY: Write RAW 22050 to buffer (Unfiltered)
         this.buffer.write(chunk);
 
         // Trigger Prediction
@@ -504,7 +508,7 @@ class InferenceEngine {
     // =========================================
 
     public async predictFromSignal(
-        signal16k: Float32Array,
+        signal: Float32Array,
         opts?: { startSec?: number; windowSec?: number; dispatchToUI?: boolean; log?: boolean; independent?: boolean }
     ) {
         if (!this.model) throw new Error('Model not loaded.');
@@ -517,11 +521,11 @@ class InferenceEngine {
 
         // Windowing
         const windowed = new Float32Array(win);
-        if (signal16k.length >= win) {
-            const sliceStart = Math.min(start, Math.max(0, signal16k.length - win));
-            windowed.set(signal16k.subarray(sliceStart, sliceStart + win));
+        if (signal.length >= win) {
+            const sliceStart = Math.min(start, Math.max(0, signal.length - win));
+            windowed.set(signal.subarray(sliceStart, sliceStart + win));
         } else {
-            windowed.set(signal16k);
+            windowed.set(signal);
         }
 
         if (opts?.log) {

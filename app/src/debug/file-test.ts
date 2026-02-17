@@ -1,6 +1,6 @@
 import {inferenceEngine} from "../model/inference-engine";
 import {downsampleBuffer} from "../features/custom-extractor.ts";
-import {decodePcmWav} from "./wav.ts"; // 🟢 Restored import
+import {decodePcmWav} from "./wav.ts";
 
 async function decodeFileToAudioBuffer(file: File): Promise<AudioBuffer> {
     const arrayBuf = await file.arrayBuffer();
@@ -49,8 +49,9 @@ export async function runFileTest(file: File) {
     const ok = await inferenceEngine.setup();
     if (!ok) throw new Error("Model setup failed.");
 
-    // 🟢 FIX: Restore WAV Fast-Path (Handles miccap files correctly)
-    if (file.name.includes("miccap_") && file.type.includes("wav")) {
+    // 🟢 FIX: Header-Based Fast-Path (Try PCM Decode First)
+    // This allows ANY 16-bit WAV to bypass WebAudio filters, regardless of filename.
+    try {
         const {samples, sampleRate} = await decodePcmWav(file);
 
         let signal: Float32Array;
@@ -65,10 +66,15 @@ export async function runFileTest(file: File) {
         console.log(`📁 FILETEST (Fast-Path): "${file.name}" | dur=${dur.toFixed(2)}s`);
         await runScan(signal);
         console.log("✅ FILETEST done.");
-        return;
+        return; // Success, exit early
+    } catch (e) {
+        // If decodePcmWav failed (MP3, AAC, 24-bit WAV, etc.), just log debug info and continue
+        if (file.name.toLowerCase().endsWith(".wav")) {
+            console.warn("Fast-path PCM decode skipped (using WebAudio):", e);
+        }
     }
 
-    // Standard Path
+    // Standard Path (WebAudio Decode)
     const buf = await decodeFileToAudioBuffer(file);
     const mono = toMonoFloat32(buf);
 
