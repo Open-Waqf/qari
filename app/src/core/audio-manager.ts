@@ -72,7 +72,12 @@ export class AudioManager {
     }
 
     async start(onDataReceived: (data: Float32Array) => void) {
-        if (this.isRunning) return;
+        this.onDataReceived = onDataReceived;
+
+        if (this.isRunning) {
+            console.log("🔁 AudioManager already running — callback updated");
+            return;
+        }
 
         try {
             // 1. Stream Acquisition
@@ -142,8 +147,6 @@ export class AudioManager {
                 this.worklet.disconnect();
                 this.worklet = null;
             }
-
-            this.onDataReceived = onDataReceived;
 
             this.worklet = new AudioWorkletNode(this._context, "resampler-processor");
             this.worklet.port.onmessage = (e) => this.onDataReceived?.(e.data);

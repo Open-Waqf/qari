@@ -2,6 +2,7 @@ import {css, html, LitElement} from 'lit';
 import {customElement, property, state} from 'lit/decorators.js';
 import {inferenceEngine} from "../../model/inference-engine.ts";
 import {i18n} from "../../core/i18n.ts";
+import {audioManager} from "../../core/audio-manager.ts";
 
 @customElement('onboarding-modal')
 export class OnboardingModal extends LitElement {
@@ -117,62 +118,96 @@ export class OnboardingModal extends LitElement {
     }
 
     async runCalibration(): Promise<number> {
-        // ✅ FIX: Force visibility + Spinner state immediately
         this.hidden = false;
-        this.classList.remove('closing');
+        this.classList.remove("closing");
         this.isCalibrating = true;
 
-        return new Promise((resolve) => {
-            const samples: number[] = [];
+        const samples: number[] = [];
 
-            const readRms = () => inferenceEngine.getCurrentRms();
+        const wasRunning = audioManager.isRunning;
+        const prevCb = audioManager.onDataReceived;
 
-            // Collect samples
-            const interval = window.setInterval(() => {
-                try {
-                    const v = readRms();
-                    if (Number.isFinite(v)) samples.push(Math.max(0, v));
-                } catch (e) { /* ignore */
-                }
-            }, 50);
+        const warmupMs = 350;        // allow worklet/resampler to “wake up”
+        const minDurationMs = 2000;  // your UX target
+        const maxDurationMs = 3500;  // safety if chunk delivery is sparse
+        const minSamples = 10;       // chunk-based; 2s @185ms ≈ 10–11 chunks
 
-            // Finish after 2s
-            const timeout = window.setTimeout(() => {
-                window.clearInterval(interval);
+        const t0 = performance.now();
 
-                // Fallback Logic
-                if (samples.length < 10) {
-                    const saved = Number(localStorage.getItem('qari_noise_floor'));
-                    const fallback = (Number.isFinite(saved) && saved > 0) ? saved : 0.001;
-                    inferenceEngine.setNoiseFloor(fallback);
-                    this._finish();
-                    resolve(fallback);
-                    return;
-                }
+        // Collect once per chunk (not by polling)
+        const onChunk = (chunk: Float32Array) => {
+            // Update lastRms using your exact gate RMS path
+            inferenceEngine.handleIncomingAudio(chunk);
 
-                // P90 Logic
-                samples.sort((a, b) => a - b);
-                const p90 = samples[Math.floor(samples.length * 0.90)] ?? 0;
-                let noiseFloor = p90 * 1.15;
-                noiseFloor = Math.max(0.0003, Math.min(0.05, noiseFloor));
+            if (performance.now() - t0 < warmupMs) return;
 
-                inferenceEngine.setNoiseFloor(noiseFloor);
-                localStorage.setItem('qari_noise_floor', String(noiseFloor));
+            const rms = inferenceEngine.getCurrentRms();
+            if (Number.isFinite(rms) && rms > 0) samples.push(rms);
+        };
 
-                console.log('✅ Calibrated Noise Floor:', noiseFloor);
+        try {
+            await audioManager.start(onChunk);
+        } catch (e) {
+            console.warn("⚠️ Calibration: could not start mic", e);
 
-                this._finish();
-                resolve(noiseFloor);
-            }, 2000);
+            // Hard fallback (and SAVE it so startEngine restores something sane)
+            const fallback = 0.001;
+            inferenceEngine.setNoiseFloor(fallback);
+            localStorage.setItem("qari_noise_floor", String(fallback));
 
-            // Safety cleanup
-            const stop = () => {
-                window.clearInterval(interval);
-                window.clearTimeout(timeout);
-                this.isCalibrating = false;
-            };
-            this.addEventListener('disconnected', stop, {once: true} as any);
-        });
+            this._finish();
+            return fallback;
+        }
+
+        // Wait until we have enough data or hit max time
+        const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+        while (true) {
+            const dt = performance.now() - t0;
+            const enoughTime = dt >= minDurationMs;
+            const enoughSamples = samples.length >= minSamples;
+            if ((enoughTime && enoughSamples) || dt >= maxDurationMs) break;
+            await sleep(50);
+        }
+
+        let noiseFloor: number;
+
+        if (samples.length < 5) {
+            // ✅ fallback should NOT blindly reuse a noisy saved value
+            const saved = Number(localStorage.getItem("qari_noise_floor"));
+            const savedOk = Number.isFinite(saved) && saved > 0;
+
+            // If saved exists, cap it so we don’t lock the gate shut on quiet mics
+            noiseFloor = savedOk ? Math.min(saved, 0.005) : 0.001;
+
+            console.warn(`⚠️ Calibration fallback used (samples=${samples.length}) → ${noiseFloor}`);
+        } else {
+            samples.sort((a, b) => a - b);
+
+            // Same idea you had (high percentile + headroom),
+            // but now it’s fed by true chunk updates.
+            const p90 = samples[Math.floor(samples.length * 0.90)] ?? samples[samples.length - 1];
+            noiseFloor = p90 * 1.15;
+
+            // ✅ clamp to sane floor: avoid 0.0003 “always open gate”
+            noiseFloor = Math.max(0.001, Math.min(0.05, noiseFloor));
+
+            console.log(`✅ Calibrated Noise Floor: ${noiseFloor} (samples=${samples.length})`);
+        }
+
+        inferenceEngine.setNoiseFloor(noiseFloor);
+        localStorage.setItem("qari_noise_floor", String(noiseFloor));
+
+        // Restore previous callback if mic was already running
+        if (wasRunning) {
+            audioManager.onDataReceived = prevCb ?? null;
+        } else {
+            // If calibration started the mic, stop it here.
+            // This prevents startEngine() from needing to stop it again.
+            audioManager.stop();
+        }
+
+        this._finish();
+        return noiseFloor;
     }
 
     // Helper to close UI cleanly
