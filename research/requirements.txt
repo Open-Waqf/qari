@@ -19,3 +19,6 @@ numpy<2.0.0
 # These will only install on your Windows machine
 tensorflowjs; sys_platform == "win32"
 tf-keras; sys_platform == "win32"
+
+playwright>=1.41.0
+pytest-playwright>=0.4.0

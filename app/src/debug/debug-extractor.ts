@@ -1,42 +1,55 @@
+import * as tf from '@tensorflow/tfjs';
 import {audioManager} from '../core/audio-manager';
-import {customExtractor, downsampleBuffer} from '../features/custom-extractor';
+import {customExtractor} from '../features/custom-extractor';
 
-//run in console await window.checkParity("/test_sine.wav");
-export async function checkAudioParity(audioUrl: string) {
-    const context = audioManager.context;
+export async function checkAudioParity(input: string | number[]) {
+
+    await tf.ready();
+    // 1. Ensure Config is Loaded (Idempotent)
     await customExtractor.loadConfig();
 
-    console.log(`🎛️ System Sample Rate: ${context.sampleRate} Hz`);
+    let signal: Float32Array;
 
-    // 2. Load & Decode
-    const response = await fetch(audioUrl);
-    const arrayBuffer = await response.arrayBuffer();
-    const audioBuffer = await context.decodeAudioData(arrayBuffer);
+    // === PATH A: Raw Data Injection (From Python) ===
+    if (Array.isArray(input)) {
+        // Python sends a standard array, we convert to Float32
+        signal = new Float32Array(input);
+    }
+    // === PATH B: Manual File Test (From Console) ===
+    else if (typeof input === 'string') {
+        console.log(`💿 Loading File: ${input}`);
+        const context = audioManager.context;
+        const response = await fetch(input);
+        const arrayBuffer = await response.arrayBuffer();
+        const audioBuffer = await context.decodeAudioData(arrayBuffer);
 
-    // 3. Get Raw Data
-    let signal = audioBuffer.getChannelData(0);
+        let rawData = audioBuffer.getChannelData(0);
 
-    // 🛑 CRITICAL FIX: Downsample to 16000 Hz
-    if (audioBuffer.sampleRate !== 16000) {
-        console.warn(`⚠️ Downsampling from ${audioBuffer.sampleRate} to 16000 Hz...`);
-        signal = downsampleBuffer(signal, audioBuffer.sampleRate, 16000) as any;
+        // Optional: Downsample if your file isn't 22050 (Simple check)
+        // Note: Your extractor expects 22050 input.
+        if (audioBuffer.sampleRate !== 22050) {
+            console.warn("⚠️ Parity file is not 22050Hz. Results may drift.");
+            // You can call downsampleBuffer here if you want to be strict
+            // rawData = downsampleBuffer(rawData, audioBuffer.sampleRate, 22050);
+        }
+
+        // Slice first frame (512 samples) for direct comparison
+        signal = rawData.slice(0, 512);
+    } else {
+        throw new Error("Invalid input. Expected string (url) or number[] (signal).");
     }
 
-    // 4. Slice exactly 1 frame (512 samples) for direct comparison
-    // Python took frame[0:512], so we do the same.
-    const frame = signal.slice(0, 512);
+    // 2. Run the Extractor
+    // We pass the signal to your class.
+    // It returns a Tensor [40, Frames, 1]
+    const tensorResult = customExtractor.extractFullClip(signal);
 
-    // 5. Run Extractor
-    // We pass just this small frame to see the exact numbers
-    // Note: You might need to adjust 'extractFullClip' to 'extract' if you want frame-by-frame
-    // But for now let's just feed the frame.
-    const tfResult = customExtractor.extractFullClip(frame);
-    const values = await tfResult.data();
+    // 3. Extract Data
+    const values = await tensorResult.data();
 
-    console.log("🚀 PARITY RESULT (First 5 values):");
-    console.log("Python Truth: [-52.72, 34.56, -10.15, 9.50, -10.44]");
-    console.log("App Output:  ", values.slice(0, 5));
+    // Cleanup Tensors to avoid memory leaks during test loops
+    tensorResult.dispose();
 
-    tfResult.dispose();
-    context.close();
+    console.log(`📤 Parity: Computed ${values.length} values.`);
+    return Array.from(values);
 }
