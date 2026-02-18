@@ -166,6 +166,7 @@ export class AudioManager {
         } catch (error) {
             console.error("🚨 AudioManager Start Failed:", error);
             this.stop();
+            throw error;
         }
     }
 
