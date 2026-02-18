@@ -47,7 +47,8 @@ export const translations = {
 
         // --- Errors ---
         micDenied: "❌ Mic Access Denied",
-        missingFile: "❌ Model File Missing"
+        missingFile: "❌ Model File Missing",
+        "backgroundNoise": "Background noise",
     },
     ar: {
         // --- العناوين والعام ---
@@ -93,7 +94,8 @@ export const translations = {
 
         // --- الأخطاء ---
         micDenied: "❌ الميكروفون محظور",
-        missingFile: "❌ ملف النموذج مفقود"
+        missingFile: "❌ ملف النموذج مفقود",
+        "backgroundNoise": "ضوضاء خلفية",
     }
 };
 

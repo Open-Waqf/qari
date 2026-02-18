@@ -18,11 +18,12 @@ export interface QariMatch {
     score: number;
 }
 
-export interface QariResultPayload {
+export type QariResultPayload = {
     winner: QariMatch;
     others: QariMatch[];
     stable?: boolean;
-}
+    activity?: 'voiced' | 'silence' | 'noise';
+};
 
 export interface AppStatePayload {
     isActive: boolean;

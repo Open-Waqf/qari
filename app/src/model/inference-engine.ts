@@ -82,7 +82,7 @@ class InferenceEngine {
         // ✅ CHANGED: Unlocked Gain Settings
         targetRms: 0.10,
         minGain: 0.6,
-        maxGain: 2.5,
+        maxGain: 5,
 
         silenceThreshold: 0.002,
         snrOn: 2.0,
@@ -354,7 +354,8 @@ class InferenceEngine {
         // 1. RMS Normalization
         let processed = signal;
         if (this.flags.rmsNormalize) {
-            const n = this.normalizeSignal(processed);
+            const dynFloor = Math.max(0.0006, this.gate.noiseFloor * this.config.snrOff);
+            const n = this.normalizeSignal(processed, dynFloor);
             processed = n.y;
             if (log) console.log(`🎚️ Gain:${n.gain.toFixed(2)}x (RMS:${n.rms.toFixed(4)})`);
         }
@@ -458,16 +459,21 @@ class InferenceEngine {
             this.debug.lastGateLogTime = now;
         }
 
-        // Gate Logic (no early returns before buffer write)
-        let becameVoiced = false;
-        let becameSilent = false;
-
         if (!this.gate.isVoiced) {
             if (rms < gateOn) {
                 this.gate.silenceCounter++;
                 if (this.gate.silenceCounter > 25) {
                     this.emitIdle();
-                    this.resetState();
+
+                    // ✅ Clear decision memory only (keep buffer full)
+                    this.state.recentScores = [];
+                    this.state.pendingWinner = null;
+                    this.state.pendingCount = 0;
+                    this.state.stableWinner = null;
+                    this.state.noWinCount = 0;
+
+                    // optional: also reset lastDispatchWinner to allow UI update if needed
+                    this.state.lastDispatchWinner = '';
                 }
             } else {
                 this.gate.isVoiced = true;
@@ -477,9 +483,8 @@ class InferenceEngine {
                 // ✅ mark voiced start (for warmup)
                 this.voicedStartedAt = now;
                 this.voicedChunksSinceStart = 0;
-                becameVoiced = true;
                 if (this.isDebug) {
-                    console.log(`became Voiced ` + becameVoiced);
+                    console.log(`became Voiced ` + true);
                 }
             }
         } else {
@@ -496,9 +501,8 @@ class InferenceEngine {
                     // ✅ prevent old pending stability from carrying over
                     this.state.pendingWinner = null;
                     this.state.pendingCount = 0;
-                    becameSilent = true;
                     if (this.isDebug) {
-                        console.log(`became Silent ` + becameSilent);
+                        console.log(`became Silent ` + true);
                     }
                 }
             } else {
@@ -507,22 +511,23 @@ class InferenceEngine {
         }
 
         const voiced = this.gate.isVoiced;
+        // Decide what to write into the buffer.
+        // activeFrame is "real signal", otherwise write zeros to flush stale audio.
+        const activeFrame = voiced ? (rms >= gateOff) : (rms >= gateOn);
 
-        // ✅ Always advance the ring buffer to avoid stale windows
         let writeBuf: Float32Array;
-        if (voiced) {
+        if (activeFrame) {
             this.voicedChunksSinceStart++;
-            writeBuf = chunk; // real audio
+            writeBuf = chunk;
         } else {
             if (!this.zeroChunk || this.zeroChunk.length !== chunk.length) {
                 this.zeroChunk = new Float32Array(chunk.length);
             } else {
                 this.zeroChunk.fill(0);
             }
-            writeBuf = this.zeroChunk; // silence filler
+            writeBuf = this.zeroChunk;
         }
-
-        // Write into buffer (keeps window time-aligned)
+        if (this.isDebug) console.log(`write=${activeFrame ? "AUDIO" : "ZERO"} voiced=${voiced} chunks=${this.voicedChunksSinceStart}`);
         this.buffer.write(writeBuf);
 
         // Trigger Prediction (only if voiced AND after short warmup)
@@ -573,7 +578,7 @@ class InferenceEngine {
             this.state.lastDispatchWinner = d.winner.name;
             this.state.lastDispatchTime = now;
             window.dispatchEvent(new CustomEvent(EVENTS.RESULT_FOUND, {
-                detail: {winner: d.winner, others: d.others, stable: d.stable}
+                detail: {winner: d.winner, others: d.others, stable: d.stable, activity: d.activity}
             }));
 
         }
@@ -649,7 +654,7 @@ class InferenceEngine {
         if (opts?.dispatchToUI) {
             window.dispatchEvent(
                 new CustomEvent(EVENTS.RESULT_FOUND, {
-                    detail: {winner: decision.winner, others: decision.others},
+                    detail: {winner: decision.winner, others: decision.others}
                 })
             );
         }
@@ -660,11 +665,14 @@ class InferenceEngine {
 
     private emitIdle() {
         requestAnimationFrame(() => {
-            window.dispatchEvent(
-                new CustomEvent(EVENTS.RESULT_FOUND, {
-                    detail: {winner: {name: STATE_IDLE, score: 0}, others: []},
-                })
-            );
+            window.dispatchEvent(new CustomEvent(EVENTS.RESULT_FOUND, {
+                detail: {
+                    winner: {name: STATE_IDLE, score: 0},
+                    others: [],
+                    stable: false,
+                    activity: 'silence'
+                },
+            }));
         });
     }
 
@@ -698,7 +706,11 @@ class InferenceEngine {
     }
 
     private formatName(raw: string): string {
-        return raw ? raw.replace(/_/g, ' ').toUpperCase() : 'UNKNOWN';
+        return raw ? raw.replace(/_/g, ' ').trim().toUpperCase() : 'UNKNOWN';
+    }
+
+    private isBackgroundName(name: string): boolean {
+        return name.trim().toUpperCase() === 'BACKGROUND';
     }
 
     private entropyNormalized(probs: number[]): number {
@@ -731,6 +743,7 @@ class InferenceEngine {
         }
 
         const top1 = topMatches[0] ?? {name: STATE_IDLE, score: 0};
+        const isBg = this.isBackgroundName(top1.name);
         const top2 = topMatches[1];
 
         const ratio = top2?.score ? top1.score / top2.score : Infinity;
@@ -748,12 +761,33 @@ class InferenceEngine {
             );
         }
 
+        if (isBg) {
+            // Background is NOT a match
+            this.state.pendingWinner = null;
+            this.state.pendingCount = 0;
+            this.state.noWinCount++;
+
+            return {
+                winner: {name: STATE_IDLE, score: 0},
+                others: topMatches.filter(m => m.score > 0.05 && !this.isBackgroundName(m.name)),
+                ent,
+                top1,
+                top2,
+                diff,
+                ratio,
+                stable: false,
+                activity: this.getCurrentRms() < this.config.silenceThreshold ? 'silence' : 'noise'
+            };
+        }
+
         // TEMP: allow high entropy while model is underconfident
         const notConfused = ent < 0.95;
         const strongTop1 = top1.score > this.acceptTop1Min;
         const clearWin = ratio > 1.35 && diff > 0.04;
 
         let winner: QariMatch = {name: STATE_IDLE, score: 0};
+
+        let stable = false;
 
         if (notConfused && strongTop1 && clearWin) {
             this.state.noWinCount = 0;
@@ -763,9 +797,11 @@ class InferenceEngine {
                 this.state.pendingCount = 1;
             }
 
-            if (this.state.pendingCount >= this.config.stabilityThreshold) this.state.stableWinner = top1;
-
             // IMPORTANT: show candidate if not yet stable
+            if (this.state.pendingCount >= this.config.stabilityThreshold) {
+                this.state.stableWinner = top1;
+                stable = true;
+            }
             winner = this.state.stableWinner ?? top1;
         } else {
             this.state.pendingWinner = null;
@@ -778,7 +814,7 @@ class InferenceEngine {
             winner = this.state.stableWinner ?? {name: STATE_IDLE, score: 0};
         }
 
-        const stable =
+        stable =
             winner.name !== STATE_IDLE &&
             this.state.stableWinner != null &&
             winner.name === this.state.stableWinner.name &&
@@ -786,13 +822,14 @@ class InferenceEngine {
 
         return {
             winner,
-            others: topMatches.filter(m => m.score > 0.05),
+            others: topMatches.filter(m => m.score > 0.05 && !this.isBackgroundName(m.name)),
             ent,
             top1,
             top2,
             diff,
             ratio,
             stable,
+            activity: 'voiced' as const,
         };
     }
 

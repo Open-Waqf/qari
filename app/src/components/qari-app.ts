@@ -60,6 +60,18 @@ export class QariApp extends LitElement {
     private historyRaf = 0;
     private pendingOthers: QariMatch[] | null = null;
 
+    @state() private lastStable: QariMatch | null = null;
+    private lastStableAt = 0;
+    private readonly stableHoldMs = 12000; // allow long reciter pauses
+
+    private noiseStreak = 0;
+    private noiseUiOn = false;
+    private lastNoiseAt = 0;
+
+// Tune
+    private readonly noiseEnterCount = 2; // need 2 consecutive noise events
+    private readonly noiseExitMs = 1200;  // clear noise UI after 1.2s without noise
+
     // Use Light DOM so global CSS applies
     createRenderRoot() {
         return this;
@@ -125,13 +137,36 @@ export class QariApp extends LitElement {
     };
 
     private handleResult = (e: Event) => {
-        const {winner, others} = (e as CustomEvent<QariResultPayload>).detail;
+        const {winner, others, stable, activity} = (e as CustomEvent<QariResultPayload>).detail;
+        const act = activity ?? (winner.name === STATE_IDLE ? 'silence' : 'voiced');
+        const now = Date.now();
+
+        if (act === 'noise') {
+            this.noiseStreak++;
+            this.lastNoiseAt = now;
+        } else {
+            this.noiseStreak = 0;
+        }
+
+        // enter noise UI only after streak
+        if (!this.noiseUiOn && this.noiseStreak >= this.noiseEnterCount) {
+            this.noiseUiOn = true;
+        }
+
+        // exit noise UI if no noise recently
+        if (this.noiseUiOn && (now - this.lastNoiseAt) > this.noiseExitMs) {
+            this.noiseUiOn = false;
+        } else {
+            this.noiseStreak = 0;
+            if (act === 'voiced') this.noiseUiOn = false; // immediate exit
+        }
 
         // Throttle history updates (parity with old requestAnimationFrame batching)
-        const key = others.map(o => `${o.name}:${Math.round(o.score * 100)}`).join('|');
+        const filteredOthers = others.filter(o => o.name.trim().toUpperCase() !== 'BACKGROUND');
+        const key = filteredOthers.map(o => `${o.name}:${Math.round(o.score * 100)}`).join('|');
         if (key !== this.lastHistoryKey) {
             this.lastHistoryKey = key;
-            this.pendingOthers = others;
+            this.pendingOthers = filteredOthers;
             if (!this.historyRaf) {
                 this.historyRaf = requestAnimationFrame(() => {
                     this.historyRaf = 0;
@@ -141,6 +176,27 @@ export class QariApp extends LitElement {
             }
         }
 
+        // Track last stable reciter (only real reciters)
+        if (stable && winner.name !== STATE_IDLE) {
+            this.lastStable = winner;
+            this.lastStableAt = Date.now();
+        }
+
+        // Expire the held winner after long silence/noise
+        if ((act === 'silence' || act === 'noise') && this.lastStable && (Date.now() - this.lastStableAt > this.stableHoldMs)) {
+            this.lastStable = null;
+            this.lastStableAt = 0;
+        }
+
+        // Background noise: don’t treat as match, don’t overwrite ring winner
+        if (this.noiseUiOn) {
+            this.pillState = 'listening';
+            this.pillText = this.t.backgroundNoise ?? "Background noise";
+            this.winner = {name: STATE_IDLE, score: 0};
+            return;
+        }
+
+        // Silence
         if (winner.name === STATE_IDLE) {
             this.pillState = 'listening';
             this.pillText = this.t.analyzing;
@@ -148,22 +204,20 @@ export class QariApp extends LitElement {
             return;
         }
 
-        const isStable = (e as CustomEvent<QariResultPayload>).detail.stable ?? (winner.score >= 0.75);
-
-        if (!isStable) {
+        // Voiced but not stable yet
+        if (!stable) {
             this.pillState = 'stabilizing';
             this.pillText = this.t.stabilizing;
             this.winner = winner;
             return;
         }
 
-        // ✅ Confirmed match (engine says stable)
+        // Stable confirmed match
         if (this.pillState !== 'match') platform.hapticSuccess();
         this.pillState = 'match';
         this.pillText = this.t.confirmed;
         this.winner = winner;
 
-        // Show result card once (only when stable)
         const card = this.querySelector('glass-card') as any;
         if (card && !card.visible) {
             card.name = winner.name;
@@ -293,7 +347,8 @@ export class QariApp extends LitElement {
     render() {
         const vDisplay = this.getVersionDisplay();
 
-        const ringLabel = this.winner.name === STATE_IDLE ? this.t.analyzing : this.winner.name;
+        const held = this.lastStable?.name;
+        const ringLabel = this.winner.name === STATE_IDLE ? (held ?? this.t.analyzing) : this.winner.name;
         const ringScore = this.winner.name === STATE_IDLE ? 0 : this.winner.score;
 
         const showControls = !this.hasStarted || !!this.errorMsg || this.isPaused;
