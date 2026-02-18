@@ -64,6 +64,15 @@ class InferenceEngine {
 
     private acceptTop1Min = 0.14;
 
+    // --- Buffer freshness across silence ---
+    private zeroChunk: Float32Array | null = null;
+    private voicedStartedAt = 0;
+    private voicedChunksSinceStart = 0;
+
+    // Predict only after we have some voiced audio in the window
+    private readonly minVoicedMsForPredict = 350;
+    private readonly minVoicedChunksForPredict = 2;
+
     // --- Debug State ---
     // ✅ NEW: Auto-detect debug mode from URL
     private isDebug = typeof window !== 'undefined' && window.location.search.includes('debug=1');
@@ -449,7 +458,10 @@ class InferenceEngine {
             this.debug.lastGateLogTime = now;
         }
 
-        // Gate Logic
+        // Gate Logic (no early returns before buffer write)
+        let becameVoiced = false;
+        let becameSilent = false;
+
         if (!this.gate.isVoiced) {
             if (rms < gateOn) {
                 this.gate.silenceCounter++;
@@ -457,31 +469,69 @@ class InferenceEngine {
                     this.emitIdle();
                     this.resetState();
                 }
-                return;
+            } else {
+                this.gate.isVoiced = true;
+                this.gate.hangCounter = this.config.voicedHangMax;
+                this.gate.silenceCounter = 0;
+
+                // ✅ mark voiced start (for warmup)
+                this.voicedStartedAt = now;
+                this.voicedChunksSinceStart = 0;
+                becameVoiced = true;
+                if (this.isDebug) {
+                    console.log(`became Voiced ` + becameVoiced);
+                }
             }
-            this.gate.isVoiced = true;
-            this.gate.hangCounter = this.config.voicedHangMax;
         } else {
             if (rms < gateOff) {
                 this.gate.hangCounter--;
                 if (this.gate.hangCounter <= 0) {
                     this.gate.isVoiced = false;
                     this.gate.silenceCounter++;
+
+                    // ✅ reset voiced window tracking
+                    this.voicedStartedAt = 0;
+                    this.voicedChunksSinceStart = 0;
+
+                    // ✅ prevent old pending stability from carrying over
+                    this.state.pendingWinner = null;
+                    this.state.pendingCount = 0;
+                    becameSilent = true;
+                    if (this.isDebug) {
+                        console.log(`became Silent ` + becameSilent);
+                    }
                 }
-                return;
             } else {
                 this.gate.hangCounter = this.config.voicedHangMax;
             }
         }
 
-        this.gate.silenceCounter = 0;
-        this.debug.written++;
+        const voiced = this.gate.isVoiced;
 
-        // 🛑 PARITY: Write RAW 22050 to buffer (Unfiltered)
-        this.buffer.write(chunk);
+        // ✅ Always advance the ring buffer to avoid stale windows
+        let writeBuf: Float32Array;
+        if (voiced) {
+            this.voicedChunksSinceStart++;
+            writeBuf = chunk; // real audio
+        } else {
+            if (!this.zeroChunk || this.zeroChunk.length !== chunk.length) {
+                this.zeroChunk = new Float32Array(chunk.length);
+            } else {
+                this.zeroChunk.fill(0);
+            }
+            writeBuf = this.zeroChunk; // silence filler
+        }
 
-        // Trigger Prediction
-        if (this.buffer.isFull && !this.state.isPredicting) {
+        // Write into buffer (keeps window time-aligned)
+        this.buffer.write(writeBuf);
+
+        // Trigger Prediction (only if voiced AND after short warmup)
+        const voicedWarm =
+            this.voicedStartedAt > 0 &&
+            (now - this.voicedStartedAt) >= this.minVoicedMsForPredict &&
+            this.voicedChunksSinceStart >= this.minVoicedChunksForPredict;
+
+        if (voiced && voicedWarm && this.buffer.isFull && !this.state.isPredicting) {
             if (now - this.state.lastPredictionTime > this.config.predictionIntervalMs) {
                 this.state.lastPredictionTime = now;
                 void this.predict();
