@@ -44,6 +44,10 @@ interface EngineConfig {
     smoothingFrames: number;
     dispatchMinIntervalMs: number;
     noiseAdaptAlpha: number;
+
+    lockDelayMs: number;      // Time stable before locking (e.g. 2s)
+    switchDelayMs: number;    // Time new winner must persist to break lock (e.g. 3s)
+    unlockDelayMs: number;    // Time of silence/noise to release lock (e.g. 3s)
 }
 
 tf.serialization.registerClass(SpecAugment);
@@ -95,7 +99,112 @@ class InferenceEngine {
         smoothingFrames: 4,
         dispatchMinIntervalMs: 150,
         noiseAdaptAlpha: 0.005,
+
+        lockDelayMs: 2000,
+        switchDelayMs: 3000,
+        unlockDelayMs: 4000,
     };
+
+    private session = {
+        lockedWinner: null as QariMatch | null,
+        lockedAt: 0,
+
+        // The "Candidate" trying to break the lock
+        candidateName: null as string | null,
+        candidateFirstSeen: 0,
+
+        // Counter for silence/noise to break lock
+        unlockConditionStart: 0,
+    };
+
+
+    // =========================================
+    // 🧠 Session Locking Logic (The New Layer)
+    // =========================================
+
+    private updateSessionState(
+        currentStable: QariMatch | null,
+        activity: 'voiced' | 'silence' | 'noise'
+    ): { finalWinner: QariMatch, isLocked: boolean } {
+        const now = Date.now();
+        const {lockDelayMs, switchDelayMs, unlockDelayMs} = this.config;
+
+        // 1. HANDLE SILENCE / UNLOCKING
+        // If we are effectively silent or just noise for too long, release the lock.
+        if (!currentStable || activity !== 'voiced') {
+            if (this.session.lockedWinner) {
+                if (this.session.unlockConditionStart === 0) {
+                    this.session.unlockConditionStart = now;
+                } else if (now - this.session.unlockConditionStart > unlockDelayMs) {
+                    // 🔓 UNLOCK due to silence
+                    if (this.isDebug) console.log(`🔓 Session Unlocked (Silence > ${unlockDelayMs}ms)`);
+                    this.session.lockedWinner = null;
+                    this.session.lockedAt = 0;
+                    this.session.unlockConditionStart = 0;
+                }
+            }
+            // If not locked, we just pass through the IDLE/Null state
+            return {
+                finalWinner: this.session.lockedWinner ?? {name: STATE_IDLE, score: 0},
+                isLocked: !!this.session.lockedWinner
+            };
+        }
+
+        // We have a VOICED signal and a valid stable winner from the lower layer
+        this.session.unlockConditionStart = 0; // Reset silence timer
+
+        // 2. IF NOT LOCKED: Attempt to Lock
+        if (!this.session.lockedWinner) {
+            // Logic: Is this candidate the same as the one we are tracking?
+            if (this.session.candidateName === currentStable.name) {
+                // If held long enough, upgrade to LOCKED
+                if (now - this.session.candidateFirstSeen > lockDelayMs) {
+                    this.session.lockedWinner = currentStable;
+                    this.session.lockedAt = now;
+                    if (this.isDebug) console.log(`🔒 Session Locked: ${currentStable.name}`);
+                }
+            } else {
+                // New candidate, start tracking
+                this.session.candidateName = currentStable.name;
+                this.session.candidateFirstSeen = now;
+            }
+
+            // While not locked, we return the current live stable winner (responsive)
+            return {finalWinner: currentStable, isLocked: false};
+        }
+
+        // 3. IF LOCKED: Handle Switching (Hysteresis)
+        // We stick to lockedWinner unless the NEW stable winner persists for `switchDelayMs`
+
+        if (currentStable.name === this.session.lockedWinner.name) {
+            // The lock is reinforced. Reset any challenge.
+            this.session.candidateName = null;
+            this.session.candidateFirstSeen = 0;
+            return {finalWinner: this.session.lockedWinner, isLocked: true};
+        }
+
+        // A Challenger Appears!
+        if (this.session.candidateName === currentStable.name) {
+            // Challenger is persisting...
+            if (now - this.session.candidateFirstSeen > switchDelayMs) {
+                // 🔄 SWITCH LOCK
+                if (this.isDebug) console.log(`🔄 Session Switched: ${this.session.lockedWinner.name} -> ${currentStable.name}`);
+                this.session.lockedWinner = currentStable;
+                this.session.lockedAt = now;
+                this.session.candidateName = null;
+                this.session.candidateFirstSeen = 0;
+                return {finalWinner: currentStable, isLocked: true};
+            }
+        } else {
+            // New distinct challenger starts
+            this.session.candidateName = currentStable.name;
+            this.session.candidateFirstSeen = now;
+        }
+
+        // If we reach here, we are locked, there is a challenger, but it hasn't won yet.
+        // RETURN THE LOCKED WINNER (Ignore the challenger for now)
+        return {finalWinner: this.session.lockedWinner, isLocked: true};
+    }
 
     /**
      * ✅ ADDED: Expose TFJS backend for Debug Panel
@@ -856,16 +965,23 @@ class InferenceEngine {
             winner.name === this.state.stableWinner.name &&
             notConfused && strongTop1 && clearWin;
 
+        // We take the "frame-stable" winner and run it through the "session-lock" logic
+        const {finalWinner, isLocked} = this.updateSessionState(
+            stable ? winner : null,
+            bgScore > 0.7 ? 'noise' : 'voiced'
+        );
+
         return {
-            winner,
+            winner: finalWinner,
             others: topMatches.filter(m => m.score > 0.05 && !this.isBackgroundName(m.name)),
             ent,
             top1,
             top2,
             diff,
             ratio,
-            stable,
+            stable: isLocked || stable,
             activity: 'voiced' as const,
+            locked: isLocked
         };
     }
 
