@@ -58,7 +58,7 @@ export class MatchHistory extends LitElement {
     render() {
         if (this.qariMatches.length === 0) return html``;
         // Use dictionary for title if available
-        const title = this.dict ? this.dict.imitationTitle : 'Imitation Analysis';
+        const title = this.dict ? this.dict.historyTitle : 'Recent Matches';
 
         return html`
             <span class="title">${title}</span>
