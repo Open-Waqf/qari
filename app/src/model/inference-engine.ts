@@ -203,6 +203,9 @@ class InferenceEngine {
     // =========================================
 
     async setup(): Promise<boolean> {
+        if (this.model && this.labels.length > 0) {
+            return true;
+        }
         try {
             await forceWasmBackend(this.isDebug);
             await customExtractor.loadConfig();
