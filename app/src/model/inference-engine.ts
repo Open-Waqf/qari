@@ -456,7 +456,10 @@ class InferenceEngine {
 
         if (noiseLike) {
             const target = rms;
-            const alpha = target < this.gate.noiseFloor ? aDown : aUp;
+            let alpha = target < this.gate.noiseFloor ? aDown : aUp;
+            if (this.gate.calibrated && target > this.gate.noiseFloor) {
+                alpha = 0; // Prevent upward drift
+            }
             this.gate.noiseFloor = (1 - alpha) * this.gate.noiseFloor + alpha * target;
 
             // ✅ clamp to prevent drift-too-low and insane highs
