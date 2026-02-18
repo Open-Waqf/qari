@@ -18,7 +18,6 @@ import {micCap} from '../audio/mic-cap';
 // Child components
 import './visualizer/halo-visualizer';
 import './ui/confidence-ring';
-import './ui/glass-card';
 import './ui/match-history';
 import './ui/onboarding-modal';
 import './ui/status-pill';
@@ -141,6 +140,9 @@ export class QariApp extends LitElement {
         const act = activity ?? (winner.name === STATE_IDLE ? 'silence' : 'voiced');
         const now = Date.now();
 
+        // ---------------------------------------------------------
+        // 1. DATA LAYER: Update counters independent of UI State
+        // ---------------------------------------------------------
         if (act === 'noise') {
             this.noiseStreak++;
             this.lastNoiseAt = now;
@@ -148,17 +150,22 @@ export class QariApp extends LitElement {
             this.noiseStreak = 0;
         }
 
-        // enter noise UI only after streak
-        if (!this.noiseUiOn && this.noiseStreak >= this.noiseEnterCount) {
-            this.noiseUiOn = true;
-        }
-
-        // exit noise UI if no noise recently
-        if (this.noiseUiOn && (now - this.lastNoiseAt) > this.noiseExitMs) {
-            this.noiseUiOn = false;
+        // ---------------------------------------------------------
+        // 2. VIEW LAYER: Handle State Transitions
+        // ---------------------------------------------------------
+        if (this.noiseUiOn) {
+            // EXIT CONDITION:
+            // 1. Timeout (no noise for N seconds) OR
+            // 2. Strong voicing detected (someone started reading)
+            if ((now - this.lastNoiseAt) > this.noiseExitMs || act === 'voiced') {
+                this.noiseUiOn = false;
+            }
         } else {
-            this.noiseStreak = 0;
-            if (act === 'voiced') this.noiseUiOn = false; // immediate exit
+            // ENTER CONDITION:
+            // Only enter if we have seen 'noise' for X frames in a row
+            if (this.noiseStreak >= this.noiseEnterCount) {
+                this.noiseUiOn = true;
+            }
         }
 
         // Throttle history updates (parity with old requestAnimationFrame batching)
@@ -218,11 +225,7 @@ export class QariApp extends LitElement {
         this.pillText = this.t.confirmed;
         this.winner = winner;
 
-        const card = this.querySelector('glass-card') as any;
-        if (card && !card.visible) {
-            card.name = winner.name;
-            card.visible = true;
-        }
+
     };
 
     private handleAppState = (e: Event) => {
@@ -295,9 +298,6 @@ export class QariApp extends LitElement {
         this.pillState = 'listening';
         this.pillText = this.t.analyzing;
         this.winner = {name: STATE_IDLE, score: 0};
-
-        const card = this.querySelector('glass-card') as any;
-        if (card) card.visible = false;
     }
 
     private toggleLang = () => {
@@ -326,10 +326,6 @@ export class QariApp extends LitElement {
         localStorage.setItem('qari_has_onboarded', 'true');
         this.showOnboard = false;
         void this.startEngine();
-    };
-
-    private onCardClose = () => {
-        this.resetScanState();
     };
 
     private getVersionDisplay() {
@@ -440,13 +436,6 @@ export class QariApp extends LitElement {
                         ${this.t.install}
                     </button>
                 </footer>
-
-                <glass-card
-                        id="result-card"
-                        .listenBtnText=${this.t.listenBtn}
-                        .dismissBtnText=${this.t.dismiss}
-                        @close=${this.onCardClose}
-                ></glass-card>
             </div>
         `;
     }

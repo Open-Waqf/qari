@@ -27,10 +27,6 @@ export const translations = {
         tooQuiet: "Too Quiet",
         unknown: "Unsure",
 
-        // --- Glass Card (Result) ---
-        listenBtn: "Listen on YouTube",
-        dismiss: "Dismiss",
-
         // --- Match History ---
         historyTitle: "Recent Matches",
         noMatches: "No matches yet...",
@@ -73,10 +69,6 @@ export const translations = {
         confirmed: "تم التعرف عليه",
         tooQuiet: "الصوت منخفض",
         unknown: "غير مؤكد",
-
-        // --- بطاقة النتيجة (Glass Card) ---
-        listenBtn: "شاهد على يوتيوب",
-        dismiss: "إغلاق",
 
         // --- سجل القراء (History) ---
         historyTitle: "آخر القراءات",
