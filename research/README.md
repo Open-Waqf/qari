@@ -2,7 +2,7 @@
 
 The Python research environment for training, evaluating, and converting the **Reciter Identification Model**.
 
-This lab supports two workflows:
+This lab ensures that the "Brain" trained in Python is mathematically identical to the "Ears" running in the browser.
 
 1. **☁️ Hybrid (Recommended):** Code locally, Train on Colab (GPU), Sync results back.
 2. **💻 Local Hero:** Run everything on your machine (CPU/GPU). **Note:** Windows users require **WSL** for the final
@@ -12,15 +12,30 @@ This lab supports two workflows:
 
 ## 📂 Project Structure
 
-* **`datasets/`**: Contains raw data (`audio/`, `audio_test_set/`, `features.npz`). *Ignored by Git
-  except `audio_test_set/`.*
+* **`datasets/`**: Contains raw data (`audio/`, `audio_test_set/`, `features.npz`).
 * **`models/`**: Stores trained model artifacts (`.keras`, `qari_model_export/`).
 * **`tools/`**: Helper scripts for syncing, auditing, and physics export.
-* **Root Scripts:** The main pipeline (`prepare_data.py`, `train.py`, `evaluate_model.py`).
+* **`prepare_data.py`**: The main feature extraction pipeline with SpecAugment.
+* **`train.py`**: Training script using `model.export()` for clean `SavedModel` folders.
+* **`generate_golden.py`**: 🆕 **The Judge.** Generates the mathematical truth file used by the Web App to verify signal
+  parity.
 
 ---
 
-## 🛠️ Setup & Prerequisites
+## 🛠️ The "Golden Parity" Workflow
+
+*The most critical step to ensure the App "hears" audio exactly like the Trainer.*
+
+1. **Export Physics:** Run `python tools/export_ears.py`. This generates `audio_config.json`, which contains the exact
+   FFT and Mel matrices your model was trained on.
+2. **Generate Truth:** Run `python generate_golden.py`. This creates a deterministic signal and calculates the "perfect"
+   MFCC result using Python’s math. It saves this to `app/public/models/golden_parity.json`.
+3. **Verify:** Open the Web App with `?debug=1` and click **Math** in the debug panel. If the JS matches the Python
+   result within `0.00005`, your pipeline is stable.
+
+---
+
+## ⚙️ Setup & Prerequisites
 
 ### 1. Python Environment (Training & Prep)
 
@@ -36,10 +51,9 @@ pip install -r requirements.txt
 
 ### 2. Audio "Physics" Configuration
 
-Run this **first**. It generates `audio_config.json`, which ensures the Web App (Client) and Python (Server) "hear"
-audio exactly the same way.
+Run this **first**. It ensures the Web App (Client) and Python (Server) use the same mathematical "lens."
 
-* **Standard:** `SR=22050`, `FFT=512`.
+* **Constants:** `SR=22050`, `FFT=512`, `Hop=256`, `MFCC=40`.
 
 ```bash
 python tools/export_ears.py
@@ -48,10 +62,9 @@ python tools/export_ears.py
 
 ### 3. Background Noise Generation
 
-Downloads or processes noise files (rain, typing, silence) to train the "Unknown" class.
+Generates synthetic noise to train the "Unknown" class.
 
 ```bash
-# Deletes old files (--reset) and generates 20 mins of noise
 python tools/export_background.py --noise_mins 20 --reset
 
 ```
@@ -60,111 +73,37 @@ python tools/export_background.py --noise_mins 20 --reset
 
 ## ☁️ Option A: The "Hybrid" Workflow (Recommended)
 
-Use your local machine for coding and data collection, but let Google Colab's powerful GPUs handle the training and
-conversion.
-
-### Step 1: Push Code & Data 🚀
-
-Run this command to upload your local `research/` code and `datasets/` to Google Drive.
-
-```bash
-python tools/sync_manager.py --push
-
-```
-
-### Step 2: Train on Colab 🧠
-
-1. Open **`tools/Qari_Trainer.ipynb`** in Google Colab.
-2. Mount Google Drive.
-3. Run the **"Train"** and **"Convert"** cells.
-4. The notebook automatically saves the trained model and the converted web model (`model.json`) back to your Drive.
-
-### Step 3: Pull Results 📥
-
-Download the trained brain back to your local machine. This updates your app's `public/models` folder automatically.
-
-```bash
-python tools/sync_manager.py --pull
-
-```
+1. **Push:** `python tools/sync_manager.py --push` (Uploads local code/audio to Drive).
+2. **Train:** Open **`tools/Qari_Trainer.ipynb`** in Google Colab. Run the "Train" and "Convert" cells.
+3. **Pull:** `python tools/sync_manager.py --pull` (Downloads results back to `app/public/models`).
 
 ---
 
 ## 💻 Option B: The "Local Hero" Workflow
 
-If you prefer to run everything offline on your own machine.
-
-### 1. Audit Dataset
-
-Check for data imbalance (identifies "Low" or "High" duration reciters).
+### 1. Prepare & Train
 
 ```bash
-python tools/audit_dataset.py
+python prepare_data.py   # Extracts spectrograms into models/features.npz
+python train.py          # Trains and creates models/qari_model_export
+python evaluate_model.py # Strict no-regression testing
 
 ```
 
-### 2. Prepare Features
+### 2. Convert to Web (The "WSL" Step) ⚠️
 
-Extracts spectrograms from audio files into `models/features.npz`.
+**Windows Users:** You **must** use **WSL (Ubuntu)** for this step due to binary conflicts between `tensorflowjs` and
+`protobuf` on Windows.
 
-```bash
-python prepare_data.py
-
-```
-
-### 3. Train Model
-
-Trains the neural network. Now uses `model.export()` to create a clean `SavedModel` folder in
-`models/qari_model_export`.
+**Open WSL Terminal:**
 
 ```bash
-python train.py
-
-```
-
-### 4. Evaluate (Quality Gate) 🛡️
-
-Compare your new model against the baseline to ensure no regressions.
-
-```bash
-python evaluate_model.py
-
-```
-
-### 5. Convert to Web (The "WSL" Step) ⚠️
-
-**Windows Users:** You **cannot** run this step in standard Windows PowerShell due to dependency conflicts between
-`tensorflowjs` and `protobuf`. You **must** use **WSL (Ubuntu)**.
-
-**1. Open WSL Terminal (Ubuntu):**
-
-```bash
-cd /mnt/c/.../qari-finder/research
-
-```
-
-**2. Set up the "Golden" Conversion Environment (Python 3.10):**
-*Note: Python 3.12 is not supported by TF 2.15.*
-
-```bash
-# Install Python 3.10 if missing
-sudo add-apt-repository ppa:deadsnakes/ppa -y
-sudo apt update && sudo apt install python3.10 python3.10-venv -y
-
-# Create & Activate Environment
-rm -rf venv_export
+# Set up the Golden Conversion Environment (Python 3.10)
 python3.10 -m venv venv_export
 source venv_export/bin/activate
-
-# Install the Golden Version Combo
-pip install --upgrade pip
 pip install tensorflow==2.15.0 tensorflowjs==4.17.0
 
-```
-
-**3. Run the Conversion:**
-
-```bash
+# Run the Conversion
 tensorflowjs_converter \
     --input_format=tf_saved_model \
     --output_format=tfjs_graph_model \
@@ -177,24 +116,21 @@ tensorflowjs_converter \
 
 ## 🔬 File Guide
 
-### 🔄 Sync Tools
-
-* **`tools/sync_manager.py`**: The bridge between Local and Cloud.
-* `--push`: Uploads code/audio to Drive.
-* `--pull`: Downloads trained `.keras` and web models to your App.
-
-
-* **`tools/Qari_Trainer.ipynb`**: The Colab Notebook for high-speed training.
-
 ### 🧠 Research Scripts
 
-* **`prepare_data.py`**: Feature extraction with augmentation and index locking.
-* **`train.py`**: Training script. Defines the `SpecAugment` layer and exports clean SavedModels.
-* **`evaluate_model.py`**: Strict no-regression testing.
+* **`prepare_data.py`**: Extracts features using Magnitude + Natural Log math.
+* **`train.py`**: Defines the `SpecAugment` dummy layer for TFJS compatibility.
+* * **`evaluate_model.py`**: Strict no-regression testing.
+* **`generate_golden.py`**: Creates a reference JSON to prove Python and JS parity.
 
 ### 🛠️ Utilities
 
-* **`tools/export_ears.py`**: Generates `audio_config.json` (the physics config: 22050Hz / 512 FFT).
-* **`tools/verify_matrix.py`**: Verifies mathematical parity between Python and JS.
-* **`tools/audit_dataset.py`**: Scans audio files for true duration and class balance.
-* **`check_balance.py`**: Check balance of the data from features.npz
+* **`tools/export_ears.py`**: Exports the mathematical matrices to `audio_config.json`.
+* **`tools/verify_matrix.py`**: Cross-checks raw matrix multiplication against Python logic.
+* **`tools/audit_dataset.py`**: Identifies class imbalance in the training data.
+* **`tools/check_balance.py`**: Check balance of the data from features.npz
+* 
+### 🔄 Sync Tools
+
+* **`tools/sync_manager.py`**: The bridge to Google Drive.
+* **`tools/Qari_Trainer.ipynb`**: Colab Notebook for GPU-accelerated training.
