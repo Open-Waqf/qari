@@ -328,10 +328,9 @@ export class QariApp extends LitElement {
         void this.startEngine();
     };
 
-    private getVersionDisplay() {
+    getVersionDisplay() {
         const v =
-            (typeof (window as any).__APP_VERSION__ !== 'undefined' && (window as any).__APP_VERSION__) ||
-            (typeof (globalThis as any).__APP_VERSION__ !== 'undefined' && (globalThis as any).__APP_VERSION__) ||
+            (typeof __APP_VERSION__ !== 'undefined' && __APP_VERSION__) ||
             '0.0.0';
 
         const s = String(v);
