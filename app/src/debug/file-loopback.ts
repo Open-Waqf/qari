@@ -70,19 +70,11 @@ export async function runFileLoopback(file: File) {
 
     await ctx.close();
 
-    // 2. Collect the Raw Output (Now 48k because worklet is passthrough)
-    const rawSignal = concatChunks(chunks);
-    console.log(`🔁 Raw Collected: ${rawSignal.length} samples (Rate: ${ctx.sampleRate})`);
+    const processedSignal = concatChunks(chunks);
 
-    // 3. DOWNSAMPLE (The Fix!)
-    // We must manually convert 48k -> 22k, just like the live engine does.
-    const sig = rawSignal;
+    console.log(`✅ Worklet Output: ${processedSignal.length} samples @ 22050Hz`);
 
-    console.log(`✅ worklet output dur=${(sig.length / 22050).toFixed(2)}s @22k`);
-    await runMicCapTest(sig);
+    await runMicCapTest(processedSignal);
 
-    console.log(`📉 Downsampled to: ${sig.length} samples @ 22k`);
-
-    await runMicCapTest(sig);
     console.log("✅ LOOPBACK done.");
 }
