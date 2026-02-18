@@ -7,6 +7,8 @@ import {forceWasmBackend} from "./tf-backend";
 
 export const STATE_IDLE = '__IDLE__';
 
+type Activity = 'voiced' | 'silence' | 'noise';
+
 /**
  * Dummy SpecAugment layer for TensorFlow.js.
  */
@@ -52,6 +54,280 @@ interface EngineConfig {
 
 tf.serialization.registerClass(SpecAugment);
 
+/**
+ * Internal helper: voice gate / VAD state + noise floor adaptation.
+ * IMPORTANT: This is a behavior-preserving extraction of the existing logic.
+ *
+ * - Applies HPF ONLY to gateScratch (gate RMS), NOT to features.
+ * - Adapts noise floor with the same two-speed alpha logic.
+ * - Maintains isVoiced, hangCounter, silenceCounter exactly as before.
+ *
+ * The engine remains responsible for:
+ * - buffer.clear() on becameVoiced
+ * - emitIdle() and decision-memory resets on idleTriggered
+ * - voiced warmup timers
+ */
+class VoiceActivityDetector {
+    private gateScratch: Float32Array | null = null;
+
+    private filterState = {x1: 0, y1: 0};
+    private readonly HP_COEFF = 0.90;
+
+    private lastRms = 0;
+
+    private gate = {
+        noiseFloor: 0.0015,
+        calibrated: false,
+        isVoiced: false,
+        hangCounter: 0,
+        silenceCounter: 0,
+    };
+
+    constructor(private readonly config: EngineConfig) {
+    }
+
+    public reset() {
+        this.gate.silenceCounter = 0;
+        this.gate.isVoiced = false;
+        this.gate.hangCounter = 0;
+        this.filterState = {x1: 0, y1: 0};
+    }
+
+    public getLastRms(): number {
+        return this.lastRms;
+    }
+
+    public getNoiseFloor(): number {
+        return this.gate.noiseFloor;
+    }
+
+    public isVoiced(): boolean {
+        return this.gate.isVoiced;
+    }
+
+    public isCalibrated(): boolean {
+        return this.gate.calibrated;
+    }
+
+    public setNoiseFloor(noiseFloorRms: number) {
+        if (!Number.isFinite(noiseFloorRms)) return;
+
+        // Clamp to sane values (0.0003 is dead silent, 0.05 is a loud coffee shop)
+        // 1. Update the baseline noise floor
+        this.gate.noiseFloor = Math.min(0.05, Math.max(0.0003, noiseFloorRms));
+        this.gate.calibrated = true;
+
+        // 2. Reset the gate counters so we don't get stuck in "Voiced" mode
+        this.gate.isVoiced = false;
+        this.gate.hangCounter = 0;
+    }
+
+    private applyHighPassInPlace(chunk: Float32Array) {
+        let {x1, y1} = this.filterState;
+        const R = this.HP_COEFF;
+        for (let i = 0; i < chunk.length; i++) {
+            const x0 = chunk[i];
+            const y0 = x0 - x1 + R * y1;
+            chunk[i] = y0;
+            x1 = x0;
+            y1 = y0;
+        }
+        this.filterState = {x1, y1};
+    }
+
+    private calculateRms(x: Float32Array): number {
+        let sum = 0;
+        for (let i = 0; i < x.length; i++) sum += x[i] * x[i];
+        return Math.sqrt(sum / Math.max(1, x.length));
+    }
+
+    public processFrame(chunk: Float32Array) {
+        // 🛑 PARITY: Filter only for GATE, not for FEATURES
+        if (!this.gateScratch || this.gateScratch.length !== chunk.length) {
+            this.gateScratch = new Float32Array(chunk.length);
+        }
+        this.gateScratch.set(chunk);
+        this.applyHighPassInPlace(this.gateScratch);
+
+        const rms = this.calculateRms(this.gateScratch);
+        this.lastRms = rms;
+
+        // Adaptive Noise Floor (two-speed + never drift below intended minimum)
+        const minGate = this.config.silenceThreshold;      // ✅ ALWAYS keep this safety floor
+        const minNoiseFloor = minGate / this.config.snrOn; // ✅ ensures gateOn >= silenceThreshold
+
+        const aDown = this.config.noiseAdaptAlpha; // fast down
+        const aUp = aDown * 0.15;                  // slow up
+
+        // Provisional gates from current floor
+        let gateOn = Math.max(minGate, this.gate.noiseFloor * this.config.snrOn);
+        let gateOff = Math.max(minGate * 0.7, this.gate.noiseFloor * this.config.snrOff);
+
+        // Learn noise floor only from "noise-like" frames
+        const noiseLike = (!this.gate.isVoiced) || (rms < gateOff);
+
+        if (noiseLike) {
+            const target = rms;
+            let alpha = target < this.gate.noiseFloor ? aDown : aUp;
+            if (this.gate.calibrated && target > this.gate.noiseFloor) {
+                alpha = 0; // Prevent upward drift
+            }
+            this.gate.noiseFloor = (1 - alpha) * this.gate.noiseFloor + alpha * target;
+
+            // ✅ clamp to prevent drift-too-low and insane highs
+            this.gate.noiseFloor = Math.min(0.05, Math.max(minNoiseFloor, this.gate.noiseFloor));
+        } else {
+            // ✅ still enforce minimum
+            this.gate.noiseFloor = Math.min(0.05, Math.max(minNoiseFloor, this.gate.noiseFloor));
+        }
+
+        // Recompute gates after potential update
+        gateOn = Math.max(minGate, this.gate.noiseFloor * this.config.snrOn);
+        gateOff = Math.max(minGate * 0.7, this.gate.noiseFloor * this.config.snrOff);
+
+        let becameVoiced = false;
+        let becameSilent = false;
+        let idleTriggered = false;
+
+        if (!this.gate.isVoiced) {
+            if (rms < gateOn) {
+                this.gate.silenceCounter++;
+                if (this.gate.silenceCounter > 25) {
+                    idleTriggered = true;
+                }
+            } else {
+                this.gate.isVoiced = true;
+                this.gate.hangCounter = this.config.voicedHangMax;
+                this.gate.silenceCounter = 0;
+                becameVoiced = true;
+            }
+        } else {
+            if (rms < gateOff) {
+                this.gate.hangCounter--;
+                if (this.gate.hangCounter <= 0) {
+                    this.gate.isVoiced = false;
+                    this.gate.silenceCounter++;
+                    becameSilent = true;
+                }
+            } else {
+                this.gate.hangCounter = this.config.voicedHangMax;
+            }
+        }
+
+        const voiced = this.gate.isVoiced;
+
+        // activeFrame means: current chunk is strong enough to be treated as real signal
+        const activeFrame = voiced ? (rms >= gateOff) : (rms >= gateOn);
+
+        return {
+            rms,
+            voiced,
+            activeFrame,
+            gateOn,
+            gateOff,
+            noiseFloor: this.gate.noiseFloor,
+            idleTriggered,
+            becameVoiced,
+            becameSilent,
+            silenceCounter: this.gate.silenceCounter,
+        };
+    }
+}
+
+/**
+ * Internal helper: session locking / hysteresis layer.
+ * Behavior preserved from updateSessionState().
+ */
+class SessionLocker {
+    private session = {
+        lockedWinner: null as QariMatch | null,
+        lockedAt: 0,
+
+        // The "Candidate" trying to break the lock
+        candidateName: null as string | null,
+        candidateFirstSeen: 0,
+
+        // Counter for silence/noise to break lock
+        unlockConditionStart: 0,
+    };
+
+    public update(
+        currentStable: QariMatch | null,
+        activity: Activity,
+        config: EngineConfig,
+        isDebug: boolean
+    ): { finalWinner: QariMatch; isLocked: boolean } {
+        const now = Date.now();
+        const {lockDelayMs, switchDelayMs, unlockDelayMs} = config;
+
+        // 1. HANDLE SILENCE / UNLOCKING
+        if (!currentStable || activity !== 'voiced') {
+            if (this.session.lockedWinner) {
+                if (this.session.unlockConditionStart === 0) {
+                    this.session.unlockConditionStart = now;
+                } else if (now - this.session.unlockConditionStart > unlockDelayMs) {
+                    // 🔓 UNLOCK due to silence
+                    if (isDebug) console.log(`🔓 Session Unlocked (Silence > ${unlockDelayMs}ms)`);
+                    this.session.lockedWinner = null;
+                    this.session.lockedAt = 0;
+                    this.session.unlockConditionStart = 0;
+                }
+            }
+
+            return {
+                finalWinner: this.session.lockedWinner ?? {name: STATE_IDLE, score: 0},
+                isLocked: !!this.session.lockedWinner
+            };
+        }
+
+        // We have a VOICED signal and a valid stable winner from the lower layer
+        this.session.unlockConditionStart = 0; // Reset silence timer
+
+        // 2. IF NOT LOCKED: Attempt to Lock
+        if (!this.session.lockedWinner) {
+            if (this.session.candidateName === currentStable.name) {
+                if (now - this.session.candidateFirstSeen > lockDelayMs) {
+                    this.session.lockedWinner = currentStable;
+                    this.session.lockedAt = now;
+                    if (isDebug) console.log(`🔒 Session Locked: ${currentStable.name}`);
+                }
+            } else {
+                this.session.candidateName = currentStable.name;
+                this.session.candidateFirstSeen = now;
+            }
+
+            return {finalWinner: currentStable, isLocked: false};
+        }
+
+        // 3. IF LOCKED: Handle Switching (Hysteresis)
+        if (currentStable.name === this.session.lockedWinner.name) {
+            this.session.candidateName = null;
+            this.session.candidateFirstSeen = 0;
+            return {finalWinner: this.session.lockedWinner, isLocked: true};
+        }
+
+        // A Challenger Appears!
+        if (this.session.candidateName === currentStable.name) {
+            if (now - this.session.candidateFirstSeen > switchDelayMs) {
+                // 🔄 SWITCH LOCK
+                if (isDebug) {
+                    console.log(`🔄 Session Switched: ${this.session.lockedWinner.name} -> ${currentStable.name}`);
+                }
+                this.session.lockedWinner = currentStable;
+                this.session.lockedAt = now;
+                this.session.candidateName = null;
+                this.session.candidateFirstSeen = 0;
+                return {finalWinner: currentStable, isLocked: true};
+            }
+        } else {
+            this.session.candidateName = currentStable.name;
+            this.session.candidateFirstSeen = now;
+        }
+
+        return {finalWinner: this.session.lockedWinner, isLocked: true};
+    }
+}
+
 class InferenceEngine {
     private static instance: InferenceEngine;
 
@@ -64,8 +340,6 @@ class InferenceEngine {
     };
     private buffer: RingBuffer;
 
-    private gateScratch: Float32Array | null = null;
-
     private acceptTop1Min = 0.14;
 
     // --- Buffer freshness across silence ---
@@ -77,13 +351,11 @@ class InferenceEngine {
     private readonly minVoicedMsForPredict = 350;
     private readonly minVoicedChunksForPredict = 2;
 
-    // --- Debug State ---
-    // ✅ NEW: Auto-detect debug mode from URL
+    // ✅ Auto-detect debug mode from URL
     private isDebug = typeof window !== 'undefined' && window.location.search.includes('debug=1');
 
     // --- Configuration ---
     private config: EngineConfig = {
-        // ✅ CHANGED: Unlocked Gain Settings
         targetRms: 0.10,
         minGain: 0.6,
         maxGain: 5,
@@ -105,162 +377,9 @@ class InferenceEngine {
         unlockDelayMs: 4000,
     };
 
-    private session = {
-        lockedWinner: null as QariMatch | null,
-        lockedAt: 0,
-
-        // The "Candidate" trying to break the lock
-        candidateName: null as string | null,
-        candidateFirstSeen: 0,
-
-        // Counter for silence/noise to break lock
-        unlockConditionStart: 0,
-    };
-
-
-    // =========================================
-    // 🧠 Session Locking Logic (The New Layer)
-    // =========================================
-
-    private updateSessionState(
-        currentStable: QariMatch | null,
-        activity: 'voiced' | 'silence' | 'noise'
-    ): { finalWinner: QariMatch, isLocked: boolean } {
-        const now = Date.now();
-        const {lockDelayMs, switchDelayMs, unlockDelayMs} = this.config;
-
-        // 1. HANDLE SILENCE / UNLOCKING
-        // If we are effectively silent or just noise for too long, release the lock.
-        if (!currentStable || activity !== 'voiced') {
-            if (this.session.lockedWinner) {
-                if (this.session.unlockConditionStart === 0) {
-                    this.session.unlockConditionStart = now;
-                } else if (now - this.session.unlockConditionStart > unlockDelayMs) {
-                    // 🔓 UNLOCK due to silence
-                    if (this.isDebug) console.log(`🔓 Session Unlocked (Silence > ${unlockDelayMs}ms)`);
-                    this.session.lockedWinner = null;
-                    this.session.lockedAt = 0;
-                    this.session.unlockConditionStart = 0;
-                }
-            }
-            // If not locked, we just pass through the IDLE/Null state
-            return {
-                finalWinner: this.session.lockedWinner ?? {name: STATE_IDLE, score: 0},
-                isLocked: !!this.session.lockedWinner
-            };
-        }
-
-        // We have a VOICED signal and a valid stable winner from the lower layer
-        this.session.unlockConditionStart = 0; // Reset silence timer
-
-        // 2. IF NOT LOCKED: Attempt to Lock
-        if (!this.session.lockedWinner) {
-            // Logic: Is this candidate the same as the one we are tracking?
-            if (this.session.candidateName === currentStable.name) {
-                // If held long enough, upgrade to LOCKED
-                if (now - this.session.candidateFirstSeen > lockDelayMs) {
-                    this.session.lockedWinner = currentStable;
-                    this.session.lockedAt = now;
-                    if (this.isDebug) console.log(`🔒 Session Locked: ${currentStable.name}`);
-                }
-            } else {
-                // New candidate, start tracking
-                this.session.candidateName = currentStable.name;
-                this.session.candidateFirstSeen = now;
-            }
-
-            // While not locked, we return the current live stable winner (responsive)
-            return {finalWinner: currentStable, isLocked: false};
-        }
-
-        // 3. IF LOCKED: Handle Switching (Hysteresis)
-        // We stick to lockedWinner unless the NEW stable winner persists for `switchDelayMs`
-
-        if (currentStable.name === this.session.lockedWinner.name) {
-            // The lock is reinforced. Reset any challenge.
-            this.session.candidateName = null;
-            this.session.candidateFirstSeen = 0;
-            return {finalWinner: this.session.lockedWinner, isLocked: true};
-        }
-
-        // A Challenger Appears!
-        if (this.session.candidateName === currentStable.name) {
-            // Challenger is persisting...
-            if (now - this.session.candidateFirstSeen > switchDelayMs) {
-                // 🔄 SWITCH LOCK
-                if (this.isDebug) console.log(`🔄 Session Switched: ${this.session.lockedWinner.name} -> ${currentStable.name}`);
-                this.session.lockedWinner = currentStable;
-                this.session.lockedAt = now;
-                this.session.candidateName = null;
-                this.session.candidateFirstSeen = 0;
-                return {finalWinner: currentStable, isLocked: true};
-            }
-        } else {
-            // New distinct challenger starts
-            this.session.candidateName = currentStable.name;
-            this.session.candidateFirstSeen = now;
-        }
-
-        // If we reach here, we are locked, there is a challenger, but it hasn't won yet.
-        // RETURN THE LOCKED WINNER (Ignore the challenger for now)
-        return {finalWinner: this.session.lockedWinner, isLocked: true};
-    }
-
-    /**
-     * ✅ ADDED: Expose TFJS backend for Debug Panel
-     */
-    public getBackend(): string {
-        return tf.getBackend();
-    }
-
-    /**
-     * ✅ ADDED: Expose last inference timestamp for Debug Panel
-     */
-    public getLastInferenceTime(): number {
-        return this.state.lastPredictionTime;
-    }
-
-    /**
-     * Sets the MODEL CONFIDENCE threshold (0.0 - 1.0).
-     * How sure must the AI be to trigger a match?
-     */
-    public setConfidenceThreshold(p: number) {
-        if (!Number.isFinite(p)) return;
-        // Clamp to avoid accidentally setting it to 0 (which accepts everything)
-        this.acceptTop1Min = Math.min(0.99, Math.max(0.10, p));
-
-        if (this.isDebug) {
-            console.log(`🎚️ Model Confidence Threshold set to ${(this.acceptTop1Min * 100).toFixed(1)}%`);
-        }
-    }
-
-    public getConfidenceThreshold() {
-        return this.acceptTop1Min;
-    }
-
-    /**
-     * Sets the AUDIO GATE noise floor (RMS Amplitude).
-     * Sounds below this relative level are ignored as silence.
-     */
-    public setNoiseFloor(noiseFloorRms: number) {
-        if (!Number.isFinite(noiseFloorRms)) return;
-
-        // Clamp to sane values (0.0003 is dead silent, 0.05 is a loud coffee shop)
-        const nf = Math.min(0.05, Math.max(0.0003, noiseFloorRms));
-
-        // 1. Update the baseline noise floor
-        this.gate.noiseFloor = nf;
-
-        this.gate.calibrated = true;
-
-        // 2. Reset the gate counters so we don't get stuck in "Voiced" mode
-        this.gate.isVoiced = false;
-        this.gate.hangCounter = 0;
-
-        if (this.isDebug) {
-            console.log(`🔇 Noise Floor calibrated to RMS: ${this.gate.noiseFloor.toFixed(5)}`);
-        }
-    }
+    // --- Internal helpers (same-file refactor; public API unchanged) ---
+    private vad = new VoiceActivityDetector(this.config);
+    private sessionLocker = new SessionLocker();
 
     // --- Feature flags ---
     private flags = {
@@ -269,27 +388,7 @@ class InferenceEngine {
         cmvn: false,
     };
 
-    public getCurrentRms(): number {
-        // You need to store the last calculated RMS in a class property
-        // In handleIncomingAudio, assign `this.lastRms = rms;`
-        return this.lastRms || 0;
-    }
-
-    private lastRms = 0;
-
-    // --- DSP State ---
-    private filterState = {x1: 0, y1: 0};
-    private readonly HP_COEFF = 0.90;
-
-    // --- Runtime ---
-    private gate = {
-        noiseFloor: 0.0015,
-        calibrated: false,
-        isVoiced: false,
-        hangCounter: 0,
-        silenceCounter: 0,
-    };
-
+    // --- Engine state (unchanged behavior) ---
     private state = {
         isPredicting: false,
         lastPredictionTime: 0,
@@ -319,6 +418,67 @@ class InferenceEngine {
     static getInstance(): InferenceEngine {
         if (!InferenceEngine.instance) InferenceEngine.instance = new InferenceEngine();
         return InferenceEngine.instance;
+    }
+
+    /**
+     * ✅ Expose TFJS backend for Debug Panel
+     */
+    public getBackend(): string {
+        return tf.getBackend();
+    }
+
+    /**
+     * ✅ Expose last inference timestamp for Debug Panel
+     */
+    public getLastInferenceTime(): number {
+        return this.state.lastPredictionTime;
+    }
+
+    /**
+     * Backward-compatible alias (safe).
+     * If your UI previously called inferenceEngine.calibrate(), it will keep working.
+     */
+    public calibrate(noiseFloorRms?: number) {
+        const nf =
+            Number.isFinite(noiseFloorRms as number)
+                ? (noiseFloorRms as number)
+                : this.getCurrentRms();
+        this.setNoiseFloor(nf);
+    }
+
+    /**
+     * Sets the MODEL CONFIDENCE threshold (0.0 - 1.0).
+     * How sure must the AI be to trigger a match?
+     */
+    public setConfidenceThreshold(p: number) {
+        if (!Number.isFinite(p)) return;
+        this.acceptTop1Min = Math.min(0.99, Math.max(0.10, p));
+
+        if (this.isDebug) {
+            console.log(`🎚️ Model Confidence Threshold set to ${(this.acceptTop1Min * 100).toFixed(1)}%`);
+        }
+    }
+
+    public getConfidenceThreshold() {
+        return this.acceptTop1Min;
+    }
+
+    /**
+     * Sets the AUDIO GATE noise floor (RMS Amplitude).
+     * Sounds below this relative level are ignored as silence.
+     */
+    public setNoiseFloor(noiseFloorRms: number) {
+        if (!Number.isFinite(noiseFloorRms)) return;
+
+        this.vad.setNoiseFloor(noiseFloorRms);
+
+        if (this.isDebug) {
+            console.log(`🔇 Noise Floor calibrated to RMS: ${this.vad.getNoiseFloor().toFixed(5)}`);
+        }
+    }
+
+    public getCurrentRms(): number {
+        return this.vad.getLastRms() || 0;
     }
 
     // =========================================
@@ -374,11 +534,10 @@ class InferenceEngine {
     }
 
     private resetState() {
-        this.gate.silenceCounter = 0;
-        this.gate.isVoiced = false;
-        this.gate.hangCounter = 0;
-        this.filterState = {x1: 0, y1: 0};
+        // preserve previous semantics: gate/filter reset + buffer clear + decision memory reset
+        this.vad.reset();
         this.buffer.clear();
+
         this.state.recentScores = [];
         this.state.pendingWinner = null;
         this.state.pendingCount = 0;
@@ -417,21 +576,8 @@ class InferenceEngine {
     }
 
     // =========================================
-    // Core DSP Logic
+    // Core DSP Logic (Feature-path only)
     // =========================================
-
-    private applyHighPassInPlace(chunk: Float32Array) {
-        let {x1, y1} = this.filterState;
-        const R = this.HP_COEFF;
-        for (let i = 0; i < chunk.length; i++) {
-            const x0 = chunk[i];
-            const y0 = x0 - x1 + R * y1;
-            chunk[i] = y0;
-            x1 = x0;
-            y1 = y0;
-        }
-        this.filterState = {x1, y1};
-    }
 
     private calculateRms(x: Float32Array): number {
         let sum = 0;
@@ -454,7 +600,7 @@ class InferenceEngine {
 
         const y = new Float32Array(x.length);
         for (let i = 0; i < x.length; i++) {
-            // 🟢 PARITY FIX: Linear Gain + Hard Clip (Removes soft-clip distortion)
+            // 🟢 PARITY FIX: Linear Gain + Hard Clip
             let v = x[i] * g;
             if (v > 1.0) v = 1.0;
             else if (v < -1.0) v = -1.0;
@@ -473,14 +619,14 @@ class InferenceEngine {
     }
 
     // =========================================
-    // 🧠 Shared Inference Pipeline (The Core Fix)
+    // Shared Inference Pipeline (unchanged)
     // =========================================
 
     private async runInferencePipeline(signal: Float32Array, log: boolean = false): Promise<number[]> {
         // 1. RMS Normalization
         let processed = signal;
         if (this.flags.rmsNormalize) {
-            const dynFloor = Math.max(0.0006, this.gate.noiseFloor * this.config.snrOff);
+            const dynFloor = Math.max(0.0006, this.vad.getNoiseFloor() * this.config.snrOff);
             const n = this.normalizeSignal(processed, dynFloor);
             processed = n.y;
             if (log) console.log(`🎚️ Gain:${n.gain.toFixed(2)}x (RMS:${n.rms.toFixed(4)})`);
@@ -499,7 +645,9 @@ class InferenceEngine {
             // 📊 DEBUG: Raw Feature Stats
             if (log) {
                 const {mean, variance} = tf.moments(input);
-                console.log(`📊 RAW Features: Mean=${mean.dataSync()[0].toFixed(2)} | Std=${Math.sqrt(variance.dataSync()[0]).toFixed(2)}`);
+                console.log(
+                    `📊 RAW Features: Mean=${mean.dataSync()[0].toFixed(2)} | Std=${Math.sqrt(variance.dataSync()[0]).toFixed(2)}`
+                );
             }
 
             const batch = input.expandDims(0);
@@ -527,7 +675,6 @@ class InferenceEngine {
     // =========================================
 
     handleIncomingAudio(rawChunk: Float32Array) {
-        // ✅ Only log if debug mode is active
         if (this.isDebug && this.debug.lastRateLogTime === 0) {
             console.log(`📦 chunkLen=${rawChunk.length} (expect 4096 @22k)`);
             this.debug.lastRateLogTime = 1;
@@ -535,115 +682,57 @@ class InferenceEngine {
 
         // 🛑 TRUST WORKLET: It delivers 22050
         const chunk = rawChunk;
-
-        // 🛑 PARITY: Filter only for GATE, not for FEATURES
-        if (!this.gateScratch || this.gateScratch.length !== chunk.length) {
-            this.gateScratch = new Float32Array(chunk.length);
-        }
-        this.gateScratch.set(chunk);
-        this.applyHighPassInPlace(this.gateScratch);
-
         const now = Date.now();
-        const rms = this.calculateRms(this.gateScratch);
-        this.lastRms = rms;
 
-        // Adaptive Noise Floor
-        // Calibration-aware gate
-        // Adaptive Noise Floor (two-speed + never drift below intended minimum)
-        const minGate = this.config.silenceThreshold;          // ✅ ALWAYS keep this safety floor
-        const minNoiseFloor = minGate / this.config.snrOn;     // ✅ ensures gateOn >= silenceThreshold
-
-        const aDown = this.config.noiseAdaptAlpha;             // fast down
-        const aUp = aDown * 0.15;                              // slow up (tune 0.10–0.25)
-
-        // Provisional gates from current floor
-        let gateOn = Math.max(minGate, this.gate.noiseFloor * this.config.snrOn);
-        let gateOff = Math.max(minGate * 0.7, this.gate.noiseFloor * this.config.snrOff);
-
-        // Learn noise floor only from "noise-like" frames
-        const noiseLike = (!this.gate.isVoiced) || (rms < gateOff);
-
-        if (noiseLike) {
-            const target = rms;
-            let alpha = target < this.gate.noiseFloor ? aDown : aUp;
-            if (this.gate.calibrated && target > this.gate.noiseFloor) {
-                alpha = 0; // Prevent upward drift
-            }
-            this.gate.noiseFloor = (1 - alpha) * this.gate.noiseFloor + alpha * target;
-
-            // ✅ clamp to prevent drift-too-low and insane highs
-            this.gate.noiseFloor = Math.min(0.05, Math.max(minNoiseFloor, this.gate.noiseFloor));
-        } else {
-            // ✅ still enforce minimum
-            this.gate.noiseFloor = Math.min(0.05, Math.max(minNoiseFloor, this.gate.noiseFloor));
-        }
-
-        // Recompute gates after potential update
-        gateOn = Math.max(minGate, this.gate.noiseFloor * this.config.snrOn);
-        gateOff = Math.max(minGate * 0.7, this.gate.noiseFloor * this.config.snrOff);
-
+        // NOTE: VAD must ONLY HPF the gateScratch, never the feature buffer (training parity).
+        const g = this.vad.processFrame(chunk);
 
         if (this.isDebug && now - this.debug.lastGateLogTime > 2000) {
-            console.log(`🎤 RMS:${rms.toFixed(4)} Gate:${gateOn.toFixed(4)} Noise:${this.gate.noiseFloor.toFixed(4)}`);
+            console.log(`🎤 RMS:${g.rms.toFixed(4)} Gate:${g.gateOn.toFixed(4)} Noise:${g.noiseFloor.toFixed(4)}`);
             this.debug.lastGateLogTime = now;
         }
 
-        if (!this.gate.isVoiced) {
-            if (rms < gateOn) {
-                this.gate.silenceCounter++;
-                if (this.gate.silenceCounter > 25) {
-                    this.emitIdle();
+        // Preserve the exact side-effects previously performed in handleIncomingAudio:
 
-                    // ✅ Clear decision memory only (keep buffer full)
-                    this.state.recentScores = [];
-                    this.state.pendingWinner = null;
-                    this.state.pendingCount = 0;
-                    this.state.stableWinner = null;
-                    this.state.noWinCount = 0;
+        if (g.idleTriggered) {
+            this.emitIdle();
 
-                    // optional: also reset lastDispatchWinner to allow UI update if needed
-                    this.state.lastDispatchWinner = '';
-                }
-            } else {
-                this.gate.isVoiced = true;
-                this.buffer.clear();
-                this.gate.hangCounter = this.config.voicedHangMax;
-                this.gate.silenceCounter = 0;
+            // ✅ Clear decision memory only (keep buffer full)
+            this.state.recentScores = [];
+            this.state.pendingWinner = null;
+            this.state.pendingCount = 0;
+            this.state.stableWinner = null;
+            this.state.noWinCount = 0;
 
-                // ✅ mark voiced start (for warmup)
-                this.voicedStartedAt = now;
-                this.voicedChunksSinceStart = 0;
-                if (this.isDebug) {
-                    console.log(`became Voiced ` + true);
-                }
-            }
-        } else {
-            if (rms < gateOff) {
-                this.gate.hangCounter--;
-                if (this.gate.hangCounter <= 0) {
-                    this.gate.isVoiced = false;
-                    this.gate.silenceCounter++;
-
-                    // ✅ reset voiced window tracking
-                    this.voicedStartedAt = 0;
-                    this.voicedChunksSinceStart = 0;
-
-                    // ✅ prevent old pending stability from carrying over
-                    this.state.pendingWinner = null;
-                    this.state.pendingCount = 0;
-                    if (this.isDebug) {
-                        console.log(`became Silent ` + true);
-                    }
-                }
-            } else {
-                this.gate.hangCounter = this.config.voicedHangMax;
-            }
+            // optional: also reset lastDispatchWinner to allow UI update if needed
+            this.state.lastDispatchWinner = '';
         }
 
-        const voiced = this.gate.isVoiced;
+        if (g.becameVoiced) {
+            this.buffer.clear();
 
-        // activeFrame means: current chunk is strong enough to be treated as real signal
-        const activeFrame = voiced ? (rms >= gateOff) : (rms >= gateOn);
+            // ✅ mark voiced start (for warmup)
+            this.voicedStartedAt = now;
+            this.voicedChunksSinceStart = 0;
+            if (this.isDebug) console.log(`became Voiced ` + true);
+        }
+
+        if (g.becameSilent) {
+            // ✅ reset voiced window tracking
+            this.voicedStartedAt = 0;
+            this.voicedChunksSinceStart = 0;
+
+            // ✅ prevent old pending stability from carrying over
+            this.state.pendingWinner = null;
+            this.state.pendingCount = 0;
+
+            if (this.isDebug) console.log(`became Silent ` + true);
+        }
+
+        const voiced = g.voiced;
+        const activeFrame = g.activeFrame;
+        const gateOff = g.gateOff;
+        const rms = g.rms;
 
         let writeBuf: Float32Array;
 
@@ -707,7 +796,9 @@ class InferenceEngine {
         const d = this.decideWinnerFromProbs(probs);
 
         if (this.isDebug) {
-            console.log(`🧮 top1=${d.top1.name}:${(d.top1.score * 100).toFixed(1)}% diff=${d.diff.toFixed(3)} ratio=${d.ratio.toFixed(2)} ent=${d.ent.toFixed(3)}`);
+            console.log(
+                `🧮 top1=${d.top1.name}:${(d.top1.score * 100).toFixed(1)}% diff=${d.diff.toFixed(3)} ratio=${d.ratio.toFixed(2)} ent=${d.ent.toFixed(3)}`
+            );
         }
 
         await new Promise<void>(r => requestAnimationFrame(() => r()));
@@ -721,7 +812,6 @@ class InferenceEngine {
             window.dispatchEvent(new CustomEvent(EVENTS.RESULT_FOUND, {
                 detail: {winner: d.winner, others: d.others, stable: d.stable, activity: d.activity}
             }));
-
         }
     }
 
@@ -761,9 +851,7 @@ class InferenceEngine {
         const raw = this.analyzeRawProbs(probs);
 
         if (opts?.log) {
-            console.log(
-                `🏁 FILETEST RAW | ${raw.top3.map(x => `${x.name}:${(x.score * 100).toFixed(0)}%`).join(' ')}`
-            );
+            console.log(`🏁 FILETEST RAW | ${raw.top3.map(x => `${x.name}:${(x.score * 100).toFixed(0)}%`).join(' ')}`);
             console.log(
                 `🧮 RAW top1=${raw.top1.name}:${(raw.top1.score * 100).toFixed(1)}% ` +
                 `top2=${raw.top2?.name ?? "-"}:${((raw.top2?.score ?? 0) * 100).toFixed(1)}% ` +
@@ -772,7 +860,6 @@ class InferenceEngine {
         }
 
         // 2) DECISION (same logic as live)
-        // independent=true means each file window is treated like a fresh clip
         const independent = opts?.independent ?? true;
         if (independent) {
             this.state.recentScores = [];
@@ -800,7 +887,6 @@ class InferenceEngine {
             );
         }
 
-        // Return both so debug tools can choose
         return {probs, raw, decision};
     }
 
@@ -894,12 +980,12 @@ class InferenceEngine {
         if (this.isDebug) {
             const t1 = top1?.score ?? 0;
             const t2 = top2?.score ?? 0;
-            const ratio = t2 > 0 ? t1 / t2 : Infinity;
-            const diff = t2 > 0 ? t1 - t2 : t1;
+            const ratio2 = t2 > 0 ? t1 / t2 : Infinity;
+            const diff2 = t2 > 0 ? t1 - t2 : t1;
             console.log(
                 `🧮 top1=${top1?.name}:${(t1 * 100).toFixed(1)}% ` +
                 `top2=${top2?.name ?? "-"}:${(t2 * 100).toFixed(1)}% ` +
-                `diff=${diff.toFixed(3)} ratio=${ratio.toFixed(2)}`
+                `diff=${diff2.toFixed(3)} ratio=${ratio2.toFixed(2)}`
             );
         }
 
@@ -928,10 +1014,9 @@ class InferenceEngine {
         // ✅ Make clearWin robust when top2 is missing
         const clearWin = top2
             ? (ratio > 1.35 && diff > 0.04)
-            : (top1.score > Math.max(0.45, this.acceptTop1Min)); // fallback when no runner-up exists
+            : (top1.score > Math.max(0.45, this.acceptTop1Min));
 
         let winner: QariMatch = {name: STATE_IDLE, score: 0};
-
         let stable = false;
 
         if (notConfused && strongTop1 && clearWin) {
@@ -942,7 +1027,6 @@ class InferenceEngine {
                 this.state.pendingCount = 1;
             }
 
-            // IMPORTANT: show candidate if not yet stable
             if (this.state.pendingCount >= this.config.stabilityThreshold) {
                 this.state.stableWinner = top1;
                 stable = true;
@@ -966,9 +1050,11 @@ class InferenceEngine {
             notConfused && strongTop1 && clearWin;
 
         // We take the "frame-stable" winner and run it through the "session-lock" logic
-        const {finalWinner, isLocked} = this.updateSessionState(
+        const {finalWinner, isLocked} = this.sessionLocker.update(
             stable ? winner : null,
-            bgScore > 0.7 ? 'noise' : 'voiced'
+            bgScore > 0.7 ? 'noise' : 'voiced',
+            this.config,
+            this.isDebug
         );
 
         return {
