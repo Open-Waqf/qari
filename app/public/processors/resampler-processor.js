@@ -29,7 +29,11 @@ class ResamplerProcessor extends AudioWorkletProcessor {
 
         // Fractional resample state
         this.frac = 0;
-        this.prev = 0;
+
+        // ✅ CUBIC STATE: Store last 3 samples of previous block
+        // We need 4 points (p0, p1, p2, p3) for interpolation.
+        // p1 is "current", p2 is "next". p0 and p(-1) are history.
+        this.cubicMem = new Float32Array(3);
 
         this.didLog = false;
     }
@@ -73,7 +77,6 @@ class ResamplerProcessor extends AudioWorkletProcessor {
         }
     }
 
-    // ✅ RESTORED: Specialized path for 44.1k -> 22.05k
     firDecimateBy2(inCh) {
         if (!this.h44) this.h44 = this.buildFIR(sampleRate, 10000);
 
@@ -103,7 +106,7 @@ class ResamplerProcessor extends AudioWorkletProcessor {
             this.histLP.fill(0);
             this.histPosLP = 0;
             this.frac = 0;
-            this.prev = 0;
+            this.cubicMem.fill(0); // Reset cubic state
         }
 
         if (this.tmpLP.length < inCh.length) this.tmpLP = new Float32Array(inCh.length);
@@ -122,18 +125,68 @@ class ResamplerProcessor extends AudioWorkletProcessor {
         return this.tmpLP.subarray(0, inCh.length);
     }
 
-    linearResample(inCh, ratio) {
+    // ✅ REPLACED: Hermite Cubic Interpolation (4-point)
+    // Much better passband flatness than Linear, much cheaper than Sinc.
+    cubicResample(inCh, ratio) {
         let t = this.frac;
-        while (t < inCh.length - 1) {
-            const i0 = Math.floor(t);
-            const a = t - i0;
-            const s0 = (i0 < 0) ? this.prev : inCh[i0];
-            const s1 = inCh[i0 + 1];
-            this.pushOut(s0 + (s1 - s0) * a);
+        const len = inCh.length;
+
+        while (t < len) {
+            const i1 = Math.floor(t);
+            const mu = t - i1;
+
+            // Gather 4 points: y0, y1(current), y2(next), y3
+            // Use history (cubicMem) if indices are negative
+            let y0, y1, y2, y3;
+
+            // y1 (at i1)
+            if (i1 < 0) y1 = this.cubicMem[3 + i1];
+            else y1 = inCh[i1];
+
+            // y0 (at i1-1)
+            if (i1 - 1 < 0) y0 = this.cubicMem[3 + (i1 - 1)];
+            else y0 = inCh[i1 - 1];
+
+            // y2 (at i1+1)
+            if (i1 + 1 >= len) break; // Need at least one future point. Wait for next block.
+            y2 = inCh[i1 + 1];
+
+            // y3 (at i1+2)
+            // If we are at the very edge, linear extrapolate or just dup y2.
+            // Duping y2 is safe enough for 1 sample at edge.
+            if (i1 + 2 >= len) y3 = y2;
+            else y3 = inCh[i1 + 2];
+
+            // Hermite interpolation
+            const mu2 = mu * mu;
+            const a0 = -0.5 * y0 + 1.5 * y1 - 1.5 * y2 + 0.5 * y3;
+            const a1 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3;
+            const a2 = -0.5 * y0 + 0.5 * y2;
+            const a3 = y1;
+
+            const out = a0 * mu * mu2 + a1 * mu2 + a2 * mu + a3;
+            this.pushOut(out);
+
             t += ratio;
         }
-        this.frac = t - inCh.length;
-        this.prev = inCh[inCh.length - 1];
+
+        this.frac = t - len;
+
+        // Save tail for next block's history
+        // We need the last 3 samples: len-3, len-2, len-1
+        if (len >= 3) {
+            this.cubicMem[0] = inCh[len - 3];
+            this.cubicMem[1] = inCh[len - 2];
+            this.cubicMem[2] = inCh[len - 1];
+        } else {
+            // Edge case: tiny chunk (shouldn't happen with 128)
+            // Shift manually if needed, but standard Web Audio chunks are 128
+            for (let i = 0; i < len; i++) {
+                this.cubicMem[0] = this.cubicMem[1];
+                this.cubicMem[1] = this.cubicMem[2];
+                this.cubicMem[2] = inCh[i];
+            }
+        }
     }
 
     process(inputs) {
@@ -146,7 +199,7 @@ class ResamplerProcessor extends AudioWorkletProcessor {
             console.log(`🎛️ Resampler: ${fs}Hz -> ${this.TARGET}Hz`);
             if (fs === 44100) console.log("✅ Mode: FIR Decimate-by-2");
             else if (fs === this.TARGET) console.log("✅ Mode: Pass-through");
-            else console.log("✅ Mode: FIR + Linear Resample");
+            else console.log("✅ Mode: FIR + Cubic Resample");
             this.didLog = true;
         }
 
@@ -156,7 +209,8 @@ class ResamplerProcessor extends AudioWorkletProcessor {
             this.firDecimateBy2(inCh);
         } else {
             const filtered = this.firLowpassBlock(inCh, fs);
-            this.linearResample(filtered, fs / this.TARGET);
+            // ✅ Use Cubic
+            this.cubicResample(filtered, fs / this.TARGET);
         }
 
         this.flush4096();
