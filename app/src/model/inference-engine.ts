@@ -92,7 +92,7 @@ class InferenceEngine {
         predictionIntervalMs: 500,
 
         stabilityThreshold: 3,
-        smoothingFrames: 8,
+        smoothingFrames: 4,
         dispatchMinIntervalMs: 150,
         noiseAdaptAlpha: 0.005,
     };
@@ -477,6 +477,7 @@ class InferenceEngine {
                 }
             } else {
                 this.gate.isVoiced = true;
+                this.buffer.clear();
                 this.gate.hangCounter = this.config.voicedHangMax;
                 this.gate.silenceCounter = 0;
 
@@ -511,15 +512,22 @@ class InferenceEngine {
         }
 
         const voiced = this.gate.isVoiced;
-        // Decide what to write into the buffer.
-        // activeFrame is "real signal", otherwise write zeros to flush stale audio.
+
+        // activeFrame means: current chunk is strong enough to be treated as real signal
         const activeFrame = voiced ? (rms >= gateOff) : (rms >= gateOn);
 
         let writeBuf: Float32Array;
-        if (activeFrame) {
-            this.voicedChunksSinceStart++;
+
+        // ✅ Change: never write ZERO while voiced (avoid poisoning the ring buffer)
+        if (voiced) {
             writeBuf = chunk;
+
+            // Keep warmup counter tied to real-energy frames, not hang frames
+            if (rms >= gateOff) {
+                this.voicedChunksSinceStart++;
+            }
         } else {
+            // Only flush with zeros when truly not voiced
             if (!this.zeroChunk || this.zeroChunk.length !== chunk.length) {
                 this.zeroChunk = new Float32Array(chunk.length);
             } else {
@@ -527,7 +535,11 @@ class InferenceEngine {
             }
             writeBuf = this.zeroChunk;
         }
-        if (this.isDebug) console.log(`write=${activeFrame ? "AUDIO" : "ZERO"} voiced=${voiced} chunks=${this.voicedChunksSinceStart}`);
+
+        if (this.isDebug) {
+            console.log(`write=${voiced ? "AUDIO" : "ZERO"} voiced=${voiced} chunks=${this.voicedChunksSinceStart}`);
+        }
+
         this.buffer.write(writeBuf);
 
         // Trigger Prediction (only if voiced AND after short warmup)
@@ -536,7 +548,7 @@ class InferenceEngine {
             (now - this.voicedStartedAt) >= this.minVoicedMsForPredict &&
             this.voicedChunksSinceStart >= this.minVoicedChunksForPredict;
 
-        if (voiced && voicedWarm && this.buffer.isFull && !this.state.isPredicting) {
+        if (voiced && voicedWarm && activeFrame && this.buffer.isFull && !this.state.isPredicting) {
             if (now - this.state.lastPredictionTime > this.config.predictionIntervalMs) {
                 this.state.lastPredictionTime = now;
                 void this.predict();
@@ -734,6 +746,11 @@ class InferenceEngine {
 
         const ent = this.entropyNormalized(avg);
         const topMatches = this.getTop3(avg);
+        const nonBg = topMatches.filter(m => !this.isBackgroundName(m.name));
+        const bgScore = topMatches.find(m => this.isBackgroundName(m.name))?.score ?? 0;
+
+        const top1 = nonBg[0] ?? {name: STATE_IDLE, score: 0};
+        const top2 = nonBg[1];
 
         const now = Date.now();
         if (this.isDebug && now - this.debug.topLogLast > this.debug.topLogInterval) {
@@ -741,10 +758,6 @@ class InferenceEngine {
             const fmt = (m?: QariMatch) => (m ? `${m.name}:${(m.score * 100).toFixed(0)}%` : '-');
             console.log(`🏆 TOP3 [Ent:${ent.toFixed(2)}] | ${fmt(topMatches[0])} | ${fmt(topMatches[1])} | ${fmt(topMatches[2])}`);
         }
-
-        const top1 = topMatches[0] ?? {name: STATE_IDLE, score: 0};
-        const isBg = this.isBackgroundName(top1.name);
-        const top2 = topMatches[1];
 
         const ratio = top2?.score ? top1.score / top2.score : Infinity;
         const diff = top2 ? top1.score - top2.score : top1.score;
@@ -761,8 +774,8 @@ class InferenceEngine {
             );
         }
 
-        if (isBg) {
-            // Background is NOT a match
+        // If we have no non-bg candidate at all, treat as idle/noise
+        if (top1.name === STATE_IDLE || top1.score <= 0) {
             this.state.pendingWinner = null;
             this.state.pendingCount = 0;
             this.state.noWinCount++;
@@ -776,14 +789,17 @@ class InferenceEngine {
                 diff,
                 ratio,
                 stable: false,
-                activity: this.getCurrentRms() < this.config.silenceThreshold ? 'silence' : 'noise'
+                activity: bgScore > 0.7 ? 'noise' : 'voiced'
             };
         }
 
-        // TEMP: allow high entropy while model is underconfident
         const notConfused = ent < 0.95;
         const strongTop1 = top1.score > this.acceptTop1Min;
-        const clearWin = ratio > 1.35 && diff > 0.04;
+
+        // ✅ Make clearWin robust when top2 is missing
+        const clearWin = top2
+            ? (ratio > 1.35 && diff > 0.04)
+            : (top1.score > Math.max(0.45, this.acceptTop1Min)); // fallback when no runner-up exists
 
         let winner: QariMatch = {name: STATE_IDLE, score: 0};
 
