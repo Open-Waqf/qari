@@ -98,6 +98,20 @@ class InferenceEngine {
     };
 
     /**
+     * ✅ ADDED: Expose TFJS backend for Debug Panel
+     */
+    public getBackend(): string {
+        return tf.getBackend();
+    }
+
+    /**
+     * ✅ ADDED: Expose last inference timestamp for Debug Panel
+     */
+    public getLastInferenceTime(): number {
+        return this.state.lastPredictionTime;
+    }
+
+    /**
      * Sets the MODEL CONFIDENCE threshold (0.0 - 1.0).
      * How sure must the AI be to trigger a match?
      */

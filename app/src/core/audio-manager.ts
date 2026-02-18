@@ -58,6 +58,17 @@ export class AudioManager {
         return this.flags.farFieldMode;
     }
 
+    /**
+     * ✅ ADDED: Expose Resampler Mode for Debug Panel
+     */
+    public getResamplerMode(): string {
+        if (!this._context) return "Inactive";
+        const sr = this._context.sampleRate;
+        if (sr === 22050) return "Pass-through (Native)";
+        if (sr === 44100) return "FIR Decimate (44k)";
+        return `Linear Resample (${(sr / 1000).toFixed(1)}k)`;
+    }
+
     // Lazy Getter for Context
     get context(): AudioContext {
         if (!this._context) {

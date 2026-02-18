@@ -32,13 +32,15 @@ export class DebugPanel {
         const content = document.createElement("div");
         content.className = "debug-content";
 
+        // ✅ FIX 1: Added explicit fields for Backend (TF), Resampler (Res), and Latency
         const stats = document.createElement("div");
         stats.className = "debug-stats";
         stats.innerHTML = `
-            <div><strong>HW:</strong> <span id="dbg-hw" style="color:#0ff">--</span></div>
+            <div><strong>TF:</strong> <span id="dbg-tf" style="color:#f0f">--</span></div>
+            <div><strong>Res:</strong> <span id="dbg-res" style="color:#0ff">--</span></div>
             <div><strong>Lat:</strong> <span id="dbg-lat" style="color:#ff0">--</span> ms</div>
-            <div><strong>Back:</strong> <span id="dbg-back">--</span></div>
             <div><strong>RMS:</strong> <span id="dbg-rms">0.00</span></div>
+            <div><strong>Floor:</strong> <span id="dbg-floor">--</span></div>
         `;
         content.appendChild(stats);
 
@@ -88,10 +90,8 @@ export class DebugPanel {
             this.createButton("Wav", () => this.captureRawMic()),
             this.createButton("Math", async () => {
                 this.log("Running Parity...");
-                // Use a dummy signal for test
                 const dummy = new Array(512).fill(0).map((_, i) => Math.sin(i * 0.1));
                 const res = await checkAudioParity(dummy);
-                // Display more values so you can actually see the data
                 this.log(`Math: [${res[0].toFixed(2)}, ${res[1].toFixed(2)}, ${res[2].toFixed(2)}]`);
             })
         );
@@ -153,36 +153,61 @@ export class DebugPanel {
     }
 
     private updateUI() {
-        // 1. Stats
         const am = audioManager as any;
-        const hwRate = am._context?.sampleRate || 0;
-        document.getElementById("dbg-hw")!.innerText = hwRate ? `${hwRate}` : "--";
-
         const eng = inferenceEngine as any;
-        if (eng.lastInferenceTime) document.getElementById("dbg-lat")!.innerText = eng.lastInferenceTime.toFixed(1);
 
-        document.getElementById("dbg-back")!.innerText =
-            eng.gate?.noiseFloor != null ? eng.gate.noiseFloor.toFixed(5) : "--";
+        // ✅ FIX 2: Connect to new getters (safely)
+        // Note: These rely on the changes to inference-engine.ts and audio-manager.ts
+        const tfBackend = eng.getBackend ? eng.getBackend() : '??';
+        const resMode = am.getResamplerMode ? am.getResamplerMode() : '??';
+        const lastTime = eng.getLastInferenceTime ? eng.getLastInferenceTime() : 0;
+        const latency = Date.now() - lastTime;
 
-        // 2. Visualizer
+        document.getElementById("dbg-tf")!.innerText = tfBackend;
+        document.getElementById("dbg-res")!.innerText = resMode;
+
+        // Only show latency if we actually have a recent prediction
+        const latText = (lastTime > 0 && latency < 5000) ? `${latency}` : "--";
+        document.getElementById("dbg-lat")!.innerText = latText;
+
+        document.getElementById("dbg-floor")!.innerText =
+            eng.gate?.noiseFloor != null ? eng.gate.noiseFloor.toFixed(4) : "--";
+
+        // ✅ FIX 3: Correct RMS calculation using Float32 and full FFT size
         if (audioManager.analyser) {
-            const data = new Uint8Array(audioManager.analyser.frequencyBinCount);
-            audioManager.analyser.getByteTimeDomainData(data);
+            // Use fftSize (2048 or 4096) for full time domain, not frequencyBinCount (which is half)
+            const len = audioManager.analyser.fftSize;
+            const data = new Float32Array(len);
+            audioManager.analyser.getFloatTimeDomainData(data);
+
             let sum = 0;
-            for (let i = 0; i < data.length; i++) {
-                const v = (data[i] - 128) / 128;
-                sum += v * v;
+            for (let i = 0; i < len; i++) {
+                sum += data[i] * data[i];
             }
-            const rms = Math.sqrt(sum / data.length);
+            const rms = Math.sqrt(sum / len);
             document.getElementById("dbg-rms")!.innerText = rms.toFixed(4);
 
             this.ctx.fillStyle = "#111";
             this.ctx.fillRect(0, 0, 280, 40);
+
+            // Draw bar based on RMS
             this.ctx.fillStyle = rms > 0.05 ? "#0f0" : "#0077ff";
             this.ctx.fillRect(0, 10, Math.min(1, rms * 10) * 280, 20);
+
+            // Optional: Draw simple waveform line for better feedback
+            this.ctx.strokeStyle = "#333";
+            this.ctx.beginPath();
+            const slice = 280 / len;
+            let x = 0;
+            for (let i = 0; i < len; i += 8) { // skip pixels for speed
+                const v = 20 + (data[i] * 20);
+                if (i === 0) this.ctx.moveTo(x, v);
+                else this.ctx.lineTo(x, v);
+                x += slice * 8;
+            }
+            this.ctx.stroke();
         }
 
-        // 3. Sync Buttons
         this.setToggleState(this.btnRms, inferenceEngine.isRmsNormalizeEnabled());
         this.setToggleState(this.btnPre, inferenceEngine.isPreEmphasisEnabled());
         this.setToggleState(this.btnCmvn, inferenceEngine.isCmvnEnabled());
@@ -236,7 +261,7 @@ export class DebugPanel {
             .debug-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 4px; margin-top: 8px; }
             .debug-btn { background: #000; color: #888; border: 1px solid #444; font-size: 9px; padding: 6px 0; cursor: pointer; text-transform: uppercase; }
             .debug-log { background: #000; height: 70px; overflow-y: auto; font-size: 10px; margin-top: 10px; padding: 6px; color: #0f0; border: 1px solid #1a1a1a; }
-            .debug-stats { font-size: 10px; display: flex; justify-content: space-between; margin-bottom: 8px; color: #aaa; }
+            .debug-stats { font-size: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 8px; color: #aaa; }
         `;
         document.head.appendChild(style);
     }
