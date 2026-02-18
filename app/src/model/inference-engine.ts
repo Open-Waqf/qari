@@ -5,7 +5,7 @@ import {EVENTS, type QariMatch} from '../core/events';
 import {audioManager} from "../core/audio-manager.ts";
 import {forceWasmBackend} from "./tf-backend";
 
-export const STATE_IDLE = 'Analyzing...';
+export const STATE_IDLE = '__IDLE__';
 
 /**
  * Dummy SpecAugment layer for TensorFlow.js.
