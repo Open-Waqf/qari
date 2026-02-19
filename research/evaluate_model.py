@@ -473,7 +473,7 @@ def main():
     p.add_argument("--suite", choices=["golden", "challenge", "both"], default="both")
 
     p.add_argument("--model", default="models/qari_model.keras", help="Path to the model to evaluate")
-    p.add_argument("--audio_config", default="../app/public/models/audio_config.json")
+    p.add_argument("--audio_config", default="models/audio_config.json")
     p.add_argument("--reciters_map", default="../app/public/models/reciters_map.json")
     p.add_argument("--normalization", default="../app/public/models/normalization.json")
 

@@ -131,15 +131,15 @@ def load_or_update_reciters_map(data_path: str) -> list[str]:
 
 def load_matrices():
     # Robust path finding
-    config_path = "../app/public/models/audio_config.json"
+    config_path = "models/audio_config.json"
     if not os.path.exists(config_path):
         # Fallback if running from root
-        config_path = "app/public/models/audio_config.json"
+        config_path = "research/models/audio_config.json"
 
     if not os.path.exists(config_path):
         raise FileNotFoundError(
-            "audio_config.json not found. Expected ../app/public/models/audio_config.json "
-            "or app/public/models/audio_config.json. Build/run the app to generate it."
+            "audio_config.json not found. Expected models/audio_config.json "
+            "or research/models/audio_config.json. Build/run the app to generate it."
         )
 
     # Hash for parity/audit traceability

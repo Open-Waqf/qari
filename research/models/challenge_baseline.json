@@ -3,7 +3,7 @@
     "root_dir": "datasets/audio_test_sets",
     "suite": "challenge",
     "model": "models/qari_model.keras",
-    "audio_config": "../app/public/models/audio_config.json",
+    "audio_config": "models/audio_config.json",
     "reciters_map": "../app/public/models/reciters_map.json",
     "normalization": "../app/public/models/normalization.json",
     "baseline_golden": "models/golden_baseline.json",

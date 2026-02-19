@@ -4,14 +4,14 @@ import os
 import numpy as np
 
 # Paths (Adjust if needed)
-CONFIG_PATH = "../app/public/models/audio_config.json"
+CONFIG_PATH = "models/audio_config.json"
 OUTPUT_PATH = "../app/public/models/golden_parity.json"
 
 
 def load_matrices():
     if not os.path.exists(CONFIG_PATH):
         # Fallback if running from root
-        alt = "app/public/models/audio_config.json"
+        alt = "research/models/audio_config.json"
         if os.path.exists(alt):
             return load_matrices_from_path(alt)
         print(f"❌ Error: Could not find {CONFIG_PATH}")

@@ -10,7 +10,7 @@ from playwright.async_api import async_playwright
 
 # ================= CONFIGURATION =================
 # We no longer hardcode APP_URL. We auto-discover it.
-AUDIO_CONFIG_PATH = "../app/public/models/audio_config.json"
+AUDIO_CONFIG_PATH = "models/audio_config.json"
 TOLERANCE_THRESHOLD = 0.05
 
 
@@ -109,7 +109,7 @@ async def run_parity_check():
     # 1. Load Config
     if not os.path.exists(AUDIO_CONFIG_PATH):
         # Handle running from root vs research folder
-        alt_path = "app/public/models/audio_config.json"
+        alt_path = "research/models/audio_config.json"
         if os.path.exists(alt_path):
             config_path = alt_path
         else:

@@ -13,17 +13,42 @@ export class CustomAudioExtractor {
     private pooledPaddedSignal = new Float32Array(44100);
     private pooledFlatBuffer = new Float32Array(171 * 512);
 
-    async loadConfig(url: string = '/models/audio_config.json') {
+    async loadConfig(url: string = '/models/audio_config.bin') {
         if (this.isReady) return;
         const res = await fetch(url);
-        const data = await res.json();
+        const buffer = await res.arrayBuffer();
 
-        this.melBasis = tf.tensor(data.mel_basis);
-        this.dctMatrix = tf.tensor(data.dct_matrix);
-        this.dftReal = tf.tensor(data.dft_real);
-        this.dftImag = tf.tensor(data.dft_imag);
-        this.window = tf.tensor1d(data.window);
+        // Wrap the raw memory in a Float32 view (instant, zero parsing)
+        const flatData = new Float32Array(buffer);
+
+        // 🟢 Slice the flat array back into our matrices based on known shapes
+        let offset = 0;
+
+        // 1. mel_basis [40, 257] -> 10,280 elements
+        const melLen = 40 * 257;
+        this.melBasis = tf.tensor2d(flatData.subarray(offset, offset + melLen), [40, 257]);
+        offset += melLen;
+
+        // 2. dct_matrix [40, 40] -> 1,600 elements
+        const dctLen = 40 * 40;
+        this.dctMatrix = tf.tensor2d(flatData.subarray(offset, offset + dctLen), [40, 40]);
+        offset += dctLen;
+
+        // 3. window [512] -> 512 elements
+        const winLen = 512;
+        this.window = tf.tensor1d(flatData.subarray(offset, offset + winLen));
+        offset += winLen;
+
+        // 4. dft_real [257, 512] -> 131,584 elements
+        const dftLen = 257 * 512;
+        this.dftReal = tf.tensor2d(flatData.subarray(offset, offset + dftLen), [257, 512]);
+        offset += dftLen;
+
+        // 5. dft_imag [257, 512] -> 131,584 elements
+        this.dftImag = tf.tensor2d(flatData.subarray(offset, offset + dftLen), [257, 512]);
+
         this.isReady = true;
+        console.log("⚡ Binary Audio Config Loaded Instantly!");
     }
 
     /**
