@@ -4,6 +4,7 @@ import {runFileLoopback} from "./file-loopback";
 import {checkAudioParity, checkStrictParity} from "./debug-extractor";
 import {downloadBlob} from "./wav";
 import {runFileTest} from "./file-test";
+import {runModelParityCheck} from './debug-parity';
 
 export class DebugPanel {
     private container: HTMLDivElement;
@@ -86,6 +87,7 @@ export class DebugPanel {
         // Action Grid
         const actionGrid = document.createElement("div");
         actionGrid.className = "debug-grid";
+        actionGrid.style.gridTemplateColumns = "1fr 1fr 1fr 1fr 1fr";
         actionGrid.append(
             this.createButton("Loop", () => this.triggerFilePicker(runFileLoopback)),
             this.createButton("Test", () => this.triggerFilePicker(runFileTest)),
@@ -133,8 +135,34 @@ export class DebugPanel {
                 } catch (e: any) {
                     this.logReport(`ERROR: ${e.message}`, "fail");
                 }
+            }),
+            this.createButton("Parity", async () => {
+                this.log("Running Keras vs TFJS Check...");
+                try {
+                    const report = await runModelParityCheck();
+                    if (report.passed) {
+                        this.logReport(
+                            `✅ MODEL PARITY PASSED\n` +
+                            `---------------------\n` +
+                            `Max Drift: ${report.maxDiff.toFixed(8)}\n` +
+                            `TFJS clone is perfectly precise.`,
+                            "pass"
+                        );
+                    } else {
+                        this.logReport(
+                            `❌ MODEL PARITY FAILED\n` +
+                            `---------------------\n` +
+                            `Max Drift: ${report.maxDiff.toFixed(8)}\n` +
+                            `Warning: Precision loss detected!`,
+                            "fail"
+                        );
+                    }
+                } catch (e: any) {
+                    this.logReport(`ERROR: ${e.message}`, "fail");
+                }
             })
         );
+
         content.appendChild(actionGrid);
 
         // Log Container

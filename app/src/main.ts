@@ -27,15 +27,14 @@ async function disableServiceWorkerEverywhere() {
 }
 
 if (platform.isWeb) {
-    const pwaToast = document.getElementById('pwa-toast');
-    const pwaRefreshBtn = document.getElementById('pwa-refresh');
-    const pwaCloseBtn = document.getElementById('pwa-close');
-
     const updateSW = registerSW({
         onNeedRefresh() {
-            if (isDebug) console.log("🔄 New App Version Found! Showing update toast.");
+            if (isDebug) console.log("🔄 SW Event: New version waiting! Showing toast...");
+            const pwaToast = document.getElementById('pwa-toast');
             if (pwaToast) {
                 pwaToast.classList.add('show');
+            } else {
+                console.error("❌ Could not find #pwa-toast in the HTML!");
             }
         },
         onOfflineReady() {
@@ -43,17 +42,19 @@ if (platform.isWeb) {
         },
     });
 
-    if (pwaRefreshBtn && pwaCloseBtn && pwaToast) {
-        pwaRefreshBtn.addEventListener('click', () => {
-            // Tell the Service Worker to skip waiting and activate the new code
-            updateSW(true);
-        });
+    // Bulletproof event listener (works even if DOM loads late)
+    document.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
 
-        pwaCloseBtn.addEventListener('click', () => {
-            // Hide the toast (user can refresh later)
-            pwaToast.classList.remove('show');
-        });
-    }
+        if (target.closest('#pwa-refresh')) {
+            if (isDebug) console.log("🔄 User clicked refresh, activating new Service Worker...");
+            updateSW(true);
+        }
+
+        if (target.closest('#pwa-close')) {
+            document.getElementById('pwa-toast')?.classList.remove('show');
+        }
+    });
 } else {
     // Native (Capacitor): kill SW so it can’t interfere
     disableServiceWorkerEverywhere();
