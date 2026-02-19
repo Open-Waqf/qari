@@ -62,18 +62,18 @@ body {
 .app-layout {
     display: flex;
     flex-direction: column;
-    /* FIX: Min-height ensures it fills screen, but 'height: auto' allows growing */
-    min-height: 100vh;
+    /* Change 100vh to 100dvh (Dynamic Viewport Height) for better mobile browser support */
+    min-height: 100dvh;
     width: 100%;
     max-width: 600px;
     margin: 0 auto;
     position: relative;
-    padding-bottom: 40px; /* Space at bottom for scrolling */
+    padding-bottom: 0;
 }
 
 /* --- HEADER --- */
 .app-header {
-    padding: 20px 24px;
+    padding: max(20px, env(safe-area-inset-top)) 24px 20px 24px;
     z-index: 20;
     text-align: center;
     flex-shrink: 0; /* Don't shrink header */
@@ -186,10 +186,10 @@ body {
 /* --- FOOTER (Scrollable) --- */
 .app-footer {
     padding: 24px;
-    padding-bottom: 60px; /* Safe area for swipe bar */
+    /* Dynamically pad the bottom to avoid the navigation/swipe bar */
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
     text-align: center;
     z-index: 20;
-    /* It will naturally expand if history list is long */
 }
 
 /* --- BUTTONS --- */
