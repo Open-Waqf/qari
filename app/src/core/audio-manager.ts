@@ -36,6 +36,18 @@ export class AudioManager {
                 this.stop();
             }
         });
+
+        // Handle hardware plug/unplug (e.g., AirPods connecting)
+        navigator.mediaDevices?.addEventListener('devicechange', () => {
+            if (this.isRunning) {
+                console.log("🔄 Audio device changed! Restarting mic...");
+                // Briefly stop and restart to grab the new default microphone
+                this.stop();
+                setTimeout(() => {
+                    if (this.onDataReceived) this.start(this.onDataReceived);
+                }, 500);
+            }
+        });
     }
 
     static getInstance() {
@@ -116,6 +128,15 @@ export class AudioManager {
             const trackSr = (settings as any).sampleRate as number | undefined;
 
             console.log("🎛️ Mic Hardware Settings:", settings);
+
+            track.onended = () => {
+                console.warn("⚠️ Microphone track ended by OS (Interruption).");
+                this.stop();
+                // Tell the UI to switch to "Paused" state
+                window.dispatchEvent(new CustomEvent(EVENTS.APP_STATE_CHANGE, {
+                    detail: {isActive: false}
+                }));
+            };
 
             // 2. Context Reconciliation
             if (this._context && trackSr && this._context.sampleRate !== trackSr) {
