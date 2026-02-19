@@ -6,9 +6,10 @@
   "license": "GPL-3.0-or-later",
   "scripts": {
     "postinstall": "node scripts/copy-tfjs-wasm.mjs",
-    "dev": "vite --host",
-    "build": "tsc -p tsconfig.json --noEmit && vite build",
-    "preview": "vite preview",
+    "generate:static": "tsx scripts/generate-static.ts",
+    "dev": "npm run generate:static && vite",
+    "build": "npm run generate:static && tsc -p tsconfig.json --noEmit && vite build",
+    "preview": "vite preview --port 4174 --host",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
@@ -35,6 +36,9 @@
     "meyda": "5.6.3"
   },
   "devDependencies": {
+    "@capacitor/assets": "3.0.5",
+    "pwa-asset-generator": "8.1.2",
+    "tsx": "4.21.0",
     "typescript": "~5.9.3",
     "vite": "^7.3.1",
     "vite-plugin-pwa": "1.2.0"

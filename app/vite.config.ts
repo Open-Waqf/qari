@@ -1,40 +1,47 @@
 import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 import pkg from './package.json';
+import {resolve} from 'path'
 
 export default defineConfig({
     define: {
         '__APP_VERSION__': JSON.stringify(pkg.version),
     },
+    build: {
+        rollupOptions: {
+            input: {
+                main: resolve(__dirname, 'index.html'),
+                ar: resolve(__dirname, 'ar/index.html'),
+            },
+        },
+    },
     plugins: [
         VitePWA({
-            registerType: 'autoUpdate',
-            includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
-            manifest: {
-                name: 'Qari Finder',
-                short_name: 'QariFinder',
-                description: 'Neural Voice Identification for Quran Reciters',
-                theme_color: '#0077ff',
-                background_color: '#02040a',
-                display: 'standalone',
-                icons: [
-                    {
-                        src: 'pwa-192x192.png',
-                        sizes: '192x192',
-                        type: 'image/png'
-                    },
-                    {
-                        src: 'pwa-512x512.png',
-                        sizes: '512x512',
-                        type: 'image/png'
-                    }
-                ]
-            },
+            injectRegister: null,        // IMPORTANT: manual registration
+            registerType: 'prompt',      // safer UX than auto reload
+            includeAssets: [
+                'pwa/favicon.ico',
+                'pwa/apple-icon-180.png',
+                'pwa/masked-icon.png',
+                'og-image.jpg',
+            ],
+            manifest: false,
             workbox: {
+                cleanupOutdatedCaches: true,
                 // This is the "Magic" part for AI apps
-                globPatterns: ['**/*.{js,css,html,json,bin,wav,woff2,ttf,bin,wasm}'],
-                maximumFileSizeToCacheInBytes: 50 * 1024 * 1024
-            }
+                globPatterns: ['**/*.{js,css,html,json,woff2,ttf,wasm}'],
+                maximumFileSizeToCacheInBytes: 50 * 1024 * 1024,
+                runtimeCaching: [
+                    {
+                        urlPattern: ({url}) => url.pathname.startsWith('/models/'),
+                        handler: 'CacheFirst',
+                        options: {
+                            cacheName: 'models-cache',
+                            expiration: {maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 30},
+                        },
+                    },
+                ],
+            },
         })
     ]
 });

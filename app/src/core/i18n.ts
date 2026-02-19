@@ -96,13 +96,18 @@ class I18nManager {
     currentLang: Lang = 'ar';
 
     toggle(): Lang {
-        this.currentLang = this.currentLang === 'en' ? 'ar' : 'en';
-        this.apply();
-        return this.currentLang;
+        this.currentLang = this.currentLang === 'en' ? 'ar' : 'en'
+        localStorage.setItem('lang', this.currentLang)
+        history.replaceState(null, '', this.currentLang === 'ar' ? '/ar/' : '/')
+        this.apply()
+        return this.currentLang
     }
 
     constructor() {
-        this.apply();
+        const fromPath: Lang = location.pathname.startsWith('/ar') ? 'ar' : 'en'
+        const saved = localStorage.getItem('lang') as Lang | null
+        this.currentLang = saved ?? fromPath
+        this.apply()
     }
 
     apply() {
