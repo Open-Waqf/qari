@@ -3,6 +3,10 @@ import './components/qari-app';
 import {platform} from './core/platform-service'
 import {registerSW} from 'virtual:pwa-register'
 
+const hasDebugUrl = location.search.includes("debug=1");
+const hasDebugStorage = localStorage.getItem("qari_debug_mode") === "true";
+const isDebug = hasDebugUrl || hasDebugStorage;
+
 async function disableServiceWorkerEverywhere() {
     if (!('serviceWorker' in navigator)) return;
 
@@ -23,13 +27,35 @@ async function disableServiceWorkerEverywhere() {
 }
 
 if (platform.isWeb) {
-    registerSW({
+    const pwaToast = document.getElementById('pwa-toast');
+    const pwaRefreshBtn = document.getElementById('pwa-refresh');
+    const pwaCloseBtn = document.getElementById('pwa-close');
+
+    const updateSW = registerSW({
         onNeedRefresh() {
+            if (isDebug) console.log("🔄 New App Version Found! Showing update toast.");
+            if (pwaToast) {
+                pwaToast.classList.add('show');
+            }
         },
         onOfflineReady() {
+            if (isDebug) console.log("📶 App is ready to work offline.");
         },
-    })
+    });
+
+    if (pwaRefreshBtn && pwaCloseBtn && pwaToast) {
+        pwaRefreshBtn.addEventListener('click', () => {
+            // Tell the Service Worker to skip waiting and activate the new code
+            updateSW(true);
+        });
+
+        pwaCloseBtn.addEventListener('click', () => {
+            // Hide the toast (user can refresh later)
+            pwaToast.classList.remove('show');
+        });
+    }
 } else {
+    // Native (Capacitor): kill SW so it can’t interfere
     disableServiceWorkerEverywhere();
 }
 
@@ -40,12 +66,9 @@ if (appRoot && !appRoot.querySelector('qari-app')) {
 }
 
 // -----------------------------------------------------
-// 🐛 DEBUG MODE FIX: Remove "localhost" check.
+// 🐛 DEBUG
 // Activate via URL (?debug=1) OR LocalStorage (APK trick)
 // -----------------------------------------------------
-const hasDebugUrl = location.search.includes("debug=1");
-const hasDebugStorage = localStorage.getItem("qari_debug_mode") === "true";
-const isDebug = hasDebugUrl || hasDebugStorage;
 
 if (isDebug) {
     console.warn("⚠️ Debug Mode Enabled: Injecting Debug Modules...");
