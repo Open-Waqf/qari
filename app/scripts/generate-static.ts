@@ -59,10 +59,9 @@ function renderManifest(lang: Lang) {
         theme_color: '#0077ff',
         background_color: '#02040a',
         icons: [
-            {src: 'pwa/pwa-192x192.png', sizes: '192x192', type: 'image/png'},
-            {src: 'pwa/pwa-512x512.png', sizes: '512x512', type: 'image/png'},
-            // if you have a maskable icon file, add it here too:
-            // { src: 'pwa/maskable-icon-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+            {src: 'pwa/icon-192x192.png', sizes: '192x192', type: 'image/png'},
+            {src: 'pwa/icon-512x512.png', sizes: '512x512', type: 'image/png'},
+            {src: 'pwa/manifest-icon-512.maskable.png', sizes: '512x512', type: 'image/png', purpose: 'maskable'},
         ],
     }
 }
