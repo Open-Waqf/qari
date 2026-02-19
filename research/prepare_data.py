@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+import random
 from pathlib import Path
 
 import librosa
@@ -26,7 +28,8 @@ RMS_MIN_BG = 0.003
 
 TARGET_RMS = 0.10
 MIN_GAIN = 0.6
-MAX_GAIN = 2.5
+# 🟢 FIX: Aligned to 5.0 to match the frontend VAD gain logic
+MAX_GAIN = 5.0
 RMS_FLOOR = 0.002
 
 # -----------------------------
@@ -39,6 +42,11 @@ CAP_MINUTES_BY_CLASS = {
 }
 
 CAP_SEED = 42
+
+# Make dataset generation as deterministic as practical.
+# (Note: some audio decoding/augmentation operations can still vary across platforms.)
+random.seed(CAP_SEED)
+np.random.seed(CAP_SEED)
 
 # --- 1. DEFINE THE "BAD MIC" SIMULATOR ---
 augment = Compose([
@@ -128,14 +136,25 @@ def load_matrices():
         # Fallback if running from root
         config_path = "app/public/models/audio_config.json"
 
-    with open(config_path, "r") as f:
-        config = json.load(f)
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(
+            "audio_config.json not found. Expected ../app/public/models/audio_config.json "
+            "or app/public/models/audio_config.json. Build/run the app to generate it."
+        )
+
+    # Hash for parity/audit traceability
+    with open(config_path, "rb") as f:
+        raw = f.read()
+    config_hash = hashlib.sha256(raw).hexdigest()
+
+    config = json.loads(raw.decode("utf-8"))
     return {
         "dft_real": np.array(config["dft_real"], dtype=np.float32),
         "dft_imag": np.array(config["dft_imag"], dtype=np.float32),
         "mel_basis": np.array(config["mel_basis"], dtype=np.float32),
         "dct_matrix": np.array(config["dct_matrix"], dtype=np.float32),
         "window": np.array(config["window"], dtype=np.float32),
+        "_config_hash": config_hash,
     }
 
 
@@ -176,7 +195,7 @@ def _mfcc_image_from_chunk(chunk: np.ndarray) -> np.ndarray:
 
 
 def process_dataset():
-    X, y, groups = [], [], []
+    X, y, groups, is_clean = [], [], [], []
 
     reciters = load_or_update_reciters_map(DATA_PATH)
     print(f"Locked class order ({len(reciters)}): {reciters}")
@@ -260,6 +279,10 @@ def process_dataset():
                     # 🟢 CALL HERE: Normalize BEFORE augmentation/features
                     norm_chunk = normalize_signal(chunk)
 
+                    # Hard guardrail: no NaNs/Infs
+                    if not np.isfinite(norm_chunk).all():
+                        raise ValueError("Non-finite values in normalized chunk")
+
                     # 1. CLEAN (Use normalized)
                     clean_entry = _mfcc_image_from_chunk(norm_chunk)
 
@@ -273,6 +296,9 @@ def process_dataset():
                             dirty_chunk, (0, SAMPLES_PER_CHUNK - len(dirty_chunk))
                         ).astype(np.float32, copy=False)
 
+                    # Keep dirty chunk in a realistic waveform range
+                    dirty_chunk = np.clip(dirty_chunk, -1.0, 1.0).astype(np.float32, copy=False)
+
                     dirty_entry = _mfcc_image_from_chunk(dirty_chunk)
 
                     # Append only if both succeeded (unchanged behavior)
@@ -280,11 +306,13 @@ def process_dataset():
                     X.append(clean_entry)
                     y.append(label_map[reciter])
                     groups.append(file_counter)
+                    is_clean.append(True)
 
                     # 2. DIRTY (Weight 0.4)
                     X.append(dirty_entry)
                     y.append(label_map[reciter])
                     groups.append(file_counter)
+                    is_clean.append(False)
 
                     # ✅ IMPORTANT: count 1 “window” per CLEAN+DIRTY pair
                     kept_windows += 1
@@ -302,6 +330,7 @@ def process_dataset():
     X = np.array(X, dtype=np.float32)
     y = np.array(y, dtype=np.int64)
     groups = np.array(groups, dtype=np.int64)
+    is_clean = np.array(is_clean, dtype=bool)
 
     # 🟢 ADDED: Expand dims for CNN (Height, Width, 1)
     X = X[..., np.newaxis]
@@ -310,9 +339,46 @@ def process_dataset():
     if X.shape[0] % 2 != 0:
         raise RuntimeError(f"Expected even number of samples (clean/dirty pairs). Got {X.shape[0]}.")
 
+    if X.shape[0] == 0:
+        raise RuntimeError("No samples were generated. Check dataset paths and RMS thresholds.")
+
+    # Pairing invariants: y/groups must match per (clean,dirty) pair
+    if not (np.all(y[0::2] == y[1::2]) and np.all(groups[0::2] == groups[1::2])):
+        raise RuntimeError("Clean/dirty pairing invariant broken (y/groups mismatch)")
+
+    if not (np.all(is_clean[0::2]) and np.all(~is_clean[1::2])):
+        raise RuntimeError("is_clean mask invariant broken (expected True/False alternating)")
+
     print(f"✅ Dataset Ready. Shape: {X.shape} (Includes Clean + Augmented)")
-    np.savez(OUTPUT_PATH, X=X, y=y, groups=groups, mapping=label_map)
+    os.makedirs(Path(OUTPUT_PATH).parent, exist_ok=True)
+    np.savez(OUTPUT_PATH, X=X, y=y, groups=groups, is_clean=is_clean, mapping=label_map)
     print(f"Saved to {OUTPUT_PATH}")
+
+    # Write a small metadata file for parity/audit traceability
+    meta = {
+        "sr": SR,
+        "duration_sec": DURATION,
+        "samples_per_chunk": SAMPLES_PER_CHUNK,
+        "frame_length": FRAME_LENGTH,
+        "hop_length": HOP_LENGTH,
+        "expected_frames": EXPECTED_FRAMES,
+        "rms_min_reciter": RMS_MIN_RECITER,
+        "rms_min_bg": RMS_MIN_BG,
+        "target_rms": TARGET_RMS,
+        "min_gain": MIN_GAIN,
+        "max_gain": MAX_GAIN,
+        "rms_floor": RMS_FLOOR,
+        "cap_minutes_default": CAP_MINUTES_DEFAULT,
+        "cap_minutes_by_class": CAP_MINUTES_BY_CLASS,
+        "cap_seed": CAP_SEED,
+        "audio_config_sha256": MATRICES.get("_config_hash"),
+        "num_samples": int(X.shape[0]),
+        "num_classes": int(len(label_map)),
+    }
+    meta_path = Path(OUTPUT_PATH).with_suffix(".meta.json")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+    print(f"🧾 Wrote dataset meta: {meta_path}")
 
 
 if __name__ == "__main__":

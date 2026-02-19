@@ -1,5 +1,6 @@
 import json
 import os
+import random
 
 import numpy as np
 import tensorflow as tf
@@ -10,6 +11,17 @@ from tensorflow import keras
 # Settings
 BATCH_SIZE = 64
 EPOCHS = 60
+
+# Reproducibility
+SEED = 42
+os.environ.setdefault("PYTHONHASHSEED", str(SEED))
+random.seed(SEED)
+np.random.seed(SEED)
+try:
+    tf.keras.utils.set_random_seed(SEED)
+    tf.config.experimental.enable_op_determinism()
+except Exception:
+    pass
 
 
 # --- SpecAugment (Gentle) ---
@@ -81,47 +93,99 @@ def train_model():
     else:
         print(f"   X is already 4D: {X.shape}")
 
+    # ----------------------------
+    # Dataset integrity checks
+    # ----------------------------
+    if len(X) != len(y) or len(X) != len(groups):
+        raise ValueError("X/y/groups length mismatch")
+    if not isinstance(mapping, dict) or len(mapping) < 2:
+        raise ValueError("mapping looks invalid")
+
+    num_classes = len(mapping)
+    if set(mapping.values()) != set(range(num_classes)):
+        raise ValueError("mapping indices must be contiguous 0..C-1")
+    y = y.astype(np.int64)
+    if y.min() < 0 or y.max() >= num_classes:
+        raise ValueError("y labels out of range")
+
+    # Clean/dirty indicator (preferred) or parity fallback
+    if "is_clean" in data.files:
+        is_clean = data["is_clean"].astype(bool)
+        if len(is_clean) != len(y):
+            raise ValueError("is_clean length mismatch")
+    else:
+        # Fallback: prepare_data saved: [clean, dirty, clean, dirty...]
+        is_clean = (np.arange(len(y)) % 2 == 0)
+        if len(y) % 2 == 0:
+            if not (np.all(y[0::2] == y[1::2]) and np.all(groups[0::2] == groups[1::2])):
+                raise ValueError("Clean/dirty pairing invariant broken (y/groups mismatch per pair)")
+
     # 2.5) Sample weights (Clean=1.0, Dirty=0.4)
-    # prepare_data saved: [clean, dirty, clean, dirty...]
-    sample_weights = np.ones(len(y), dtype=np.float32)
-    sample_weights[1::2] = 0.4
+    sample_weights = np.where(is_clean, 1.0, 0.4).astype(np.float32)
 
-    # 3) Clean-only normalization stats (keep exactly as you had)
-    print("📏 Calculating Normalization Stats (Clean Data Only)...")
-    X_clean_only = X[::2]
-    mean = float(np.mean(X_clean_only))
-    std = float(np.std(X_clean_only))
+    # ---------------------------------------------------------
+    # 🟢 FIX 1: Create a true 3-way split BEFORE normalization
+    # ---------------------------------------------------------
+    splitter_1 = GroupShuffleSplit(test_size=0.20, n_splits=1, random_state=SEED)
+    train_idx, temp_idx = next(splitter_1.split(X, y, groups))
+
+    splitter_2 = GroupShuffleSplit(test_size=0.50, n_splits=1, random_state=SEED)
+    val_rel, test_rel = next(splitter_2.split(X[temp_idx], y[temp_idx], groups[temp_idx]))
+    val_idx = temp_idx[val_rel]
+    test_idx = temp_idx[test_rel]
+
+    # Fail-loud leakage checks: no shared groups across splits
+    train_groups = set(groups[train_idx].tolist())
+    val_groups = set(groups[val_idx].tolist())
+    test_groups = set(groups[test_idx].tolist())
+    if train_groups & val_groups or train_groups & test_groups or val_groups & test_groups:
+        raise ValueError("Group leakage detected across splits")
+
+    os.makedirs("models", exist_ok=True)
+    np.savez("models/splits.npz", train_idx=train_idx, val_idx=val_idx, test_idx=test_idx, seed=SEED)
+
+    # ---------------------------------------------------------
+    # 🟢 FIX 2: Calculate Normalization Stats on TRAIN set ONLY
+    # ---------------------------------------------------------
+    print("📏 Calculating Normalization Stats (Clean Train Data Only)...")
+    train_clean_idx = train_idx[is_clean[train_idx]]
+    if len(train_clean_idx) == 0:
+        raise ValueError("No clean samples found in training split")
+    X_train_clean = X[train_clean_idx]
+
+    mean = float(np.mean(X_train_clean))
+    std = float(np.std(X_train_clean))
     std = max(std, 1e-6)
-    print(f"   Mean: {mean:.4f}, Std: {std:.4f}")
+    print(f"   Train Mean: {mean:.4f}, Train Std: {std:.4f}")
 
+    # Apply normalization safely to the whole dataset using ONLY train stats
     X = (X - mean) / std
+
+    # Slice the normalized arrays
+    X_train, X_val, X_test = X[train_idx], X[val_idx], X[test_idx]
+    y_train, y_val, y_test = y[train_idx], y[val_idx], y[test_idx]
+    w_train = sample_weights[train_idx]
 
     INPUT_SHAPE = tuple(X.shape[1:])
     print("✅ Using INPUT_SHAPE from features:", INPUT_SHAPE)
 
+    if len(INPUT_SHAPE) != 3:
+        raise ValueError(f"Unexpected feature shape {INPUT_SHAPE}, expected (40, T, 1).")
     if INPUT_SHAPE[0] != 40 or INPUT_SHAPE[2] != 1:
         raise ValueError(f"Unexpected feature shape {INPUT_SHAPE}, expected (40, T, 1).")
-
     if INPUT_SHAPE[1] != 171:
         print(f"⚠️ WARNING: width is {INPUT_SHAPE[1]} not 171. If intentional, align evaluator+app too.")
 
+    # Write normalization file for the app
     with open(f"{model_output_dir}/normalization.json", "w") as f:
-        json.dump({"mean": mean, "std": std}, f)
-
-    # 4) Split (split weights too)
-    splitter = GroupShuffleSplit(test_size=0.2, n_splits=1, random_state=42)
-    train_idx, test_idx = next(splitter.split(X, y, groups))
-
-    X_train, X_test = X[train_idx], X[test_idx]
-    y_train, y_test = y[train_idx], y[test_idx]
-    w_train = sample_weights[train_idx]
+        json.dump({"mean": mean, "std": std, "seed": SEED, "computed_on": "train_clean_only"}, f)
 
     print("⚖️ Calculating class weights...")
     classes = np.unique(y_train)
     weights = compute_class_weight(class_weight='balanced', classes=classes, y=y_train)
     class_weights_dict = dict(zip(classes, weights))
 
-    print(f"✅ Data Ready. Train: {len(X_train)}, Test: {len(X_test)}")
+    print(f"✅ Data Ready. Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
 
     # 5) Model (GAP + BN + no Flatten)
     model = keras.Sequential([
@@ -178,7 +242,8 @@ def train_model():
         sample_weight=final_weights_train,
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
-        validation_data=(X_test, y_test),
+        # 🟢 FIX 3: Use validation set for Early Stopping, NOT the test set
+        validation_data=(X_val, y_val),
         callbacks=[early_stop, reduce_lr],
     )
 
@@ -188,6 +253,29 @@ def train_model():
 
     model.export("models/qari_model_export")
     print("✅ Model exported to models/qari_model_export")
+
+    # ---------------------------------------------------------
+    # 🟢 FIX 4: Evaluate on the pristine, untouched Test Set
+    # ---------------------------------------------------------
+    print("\n📊 Evaluating on True Held-Out Test Set...")
+
+    def _eval(name: str, Xs: np.ndarray, ys: np.ndarray, sw: np.ndarray | None = None):
+        if len(ys) == 0:
+            print(f"   {name}: (empty)")
+            return
+        if sw is None:
+            loss, acc = model.evaluate(Xs, ys, verbose=0)
+            print(f"   {name}: loss={loss:.4f} acc={acc * 100:.2f}% (unweighted)")
+        else:
+            loss, acc = model.evaluate(Xs, ys, sample_weight=sw, verbose=0)
+            print(f"   {name}: loss={loss:.4f} acc={acc * 100:.2f}% (weighted)")
+
+    _eval("Test (all)", X_test, y_test)
+    _eval("Test (all)", X_test, y_test, sw=sample_weights[test_idx])
+
+    test_is_clean = is_clean[test_idx]
+    _eval("Test (clean)", X_test[test_is_clean], y_test[test_is_clean])
+    _eval("Test (dirty)", X_test[~test_is_clean], y_test[~test_is_clean])
 
 
 if __name__ == "__main__":
