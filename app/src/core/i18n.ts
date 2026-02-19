@@ -46,6 +46,11 @@ export const translations = {
         missingFile: "❌ Model File Missing",
         backgroundNoise: "Background noise",
         stopBtn: "Stop Listening",
+        installPrompt: "Install Qari Finder for a better experience and offline use.",
+        notNow: "Not Now",
+        newUpdate: "New update available!",
+        refresh: "Refresh",
+        dismiss: "Dismiss",
     },
     ar: {
         // --- العناوين والعام ---
@@ -90,6 +95,11 @@ export const translations = {
         missingFile: "❌ ملف النموذج مفقود",
         backgroundNoise: "ضوضاء خلفية",
         stopBtn: "إيقاف الاستماع",
+        installPrompt: "قم بتثبيت قارئ فايندر للحصول على تجربة أفضل واستخدام بدون إنترنت.",
+        notNow: "ليس الآن",
+        newUpdate: "يوجد تحديث جديد متاح!",
+        refresh: "تحديث",
+        dismiss: "تجاهل",
     }
 };
 

@@ -21,12 +21,7 @@ import './ui/confidence-ring';
 import './ui/match-history';
 import './ui/onboarding-modal';
 import './ui/status-pill';
-
-// Minimal TS type for the PWA install prompt event (not in standard lib.dom typings)
-interface BeforeInstallPromptEvent extends Event {
-    prompt: () => Promise<void>;
-    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform?: string }>;
-}
+import './ui/pwa-install-banner';
 
 type PillState = 'idle' | 'listening' | 'stabilizing' | 'match';
 
@@ -49,10 +44,6 @@ export class QariApp extends LitElement {
     @state() private hasStarted = false; // hide controls after success
     @state() private isPaused = false;   // show "Resume" label
     @state() private errorMsg = '';
-
-    // --- PWA ---
-    @state() private isInstallable = false;
-    private deferredPrompt: BeforeInstallPromptEvent | null = null;
 
     // --- History throttling ---
     private lastHistoryKey = '';
@@ -99,7 +90,6 @@ export class QariApp extends LitElement {
         window.addEventListener(EVENTS.LANG_CHANGE, this.handleLangChange);
         window.addEventListener(EVENTS.RESULT_FOUND, this.handleResult);
         window.addEventListener(EVENTS.APP_STATE_CHANGE, this.handleAppState);
-        window.addEventListener('beforeinstallprompt', this.handleBeforeInstall as EventListener);
         window.addEventListener(EVENTS.DEBUG_MESSAGE, this.handleDebugMessage);
         window.addEventListener(EVENTS.REQUEST_RESTART, this.handleRestartRequest);
         navigator.mediaDevices?.addEventListener('devicechange', this.handleDeviceChange);
@@ -109,7 +99,6 @@ export class QariApp extends LitElement {
         window.removeEventListener(EVENTS.LANG_CHANGE, this.handleLangChange);
         window.removeEventListener(EVENTS.RESULT_FOUND, this.handleResult);
         window.removeEventListener(EVENTS.APP_STATE_CHANGE, this.handleAppState);
-        window.removeEventListener('beforeinstallprompt', this.handleBeforeInstall as EventListener);
         window.removeEventListener(EVENTS.DEBUG_MESSAGE, this.handleDebugMessage);
         window.removeEventListener(EVENTS.REQUEST_RESTART, this.handleRestartRequest);
         navigator.mediaDevices?.removeEventListener('devicechange', this.handleDeviceChange);
@@ -249,12 +238,6 @@ export class QariApp extends LitElement {
         }
     };
 
-    private handleBeforeInstall = (e: BeforeInstallPromptEvent) => {
-        e.preventDefault();
-        this.deferredPrompt = e;
-        this.isInstallable = true;
-    };
-
     // --- Actions ---
 
     private stopEngine = async () => {
@@ -323,14 +306,6 @@ export class QariApp extends LitElement {
     private recalibrate = () => {
         const onboard = this.querySelector('onboarding-modal') as any;
         onboard?.runCalibration?.().then(() => void this.startEngine());
-    };
-
-    private installApp = async () => {
-        if (!this.deferredPrompt) return;
-        await this.deferredPrompt.prompt();
-        const {outcome} = await this.deferredPrompt.userChoice;
-        if (outcome === 'accepted') this.isInstallable = false;
-        this.deferredPrompt = null;
     };
 
     private checkOnboarding() {
@@ -450,14 +425,7 @@ export class QariApp extends LitElement {
 
                     <match-history id="match-history" .dict=${this.t} .qariMatches=${this.others}></match-history>
 
-                    <button
-                            id="install-btn"
-                            class="secondary-btn"
-                            style="display: ${this.isInstallable ? 'block' : 'none'};"
-                            @click=${() => void this.installApp()}
-                    >
-                        ${this.t.install}
-                    </button>
+                    <pwa-install-banner .dict=${this.t}></pwa-install-banner>
                 </footer>
             </div>
         `;

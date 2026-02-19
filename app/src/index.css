@@ -354,6 +354,47 @@ button:focus-visible {
     margin-top: 0;
 }
 
+.install-floating-card {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 90%;
+    max-width: 380px;
+    background: rgba(20, 25, 35, 0.95);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(0, 119, 255, 0.3);
+    border-radius: 20px;
+    padding: 16px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+    z-index: 1000;
+    text-align: center;
+    animation: slideUp 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.install-floating-card p {
+    margin: 0 0 12px 0;
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.install-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+}
+
+@keyframes slideUp {
+    from {
+        bottom: -100px;
+        opacity: 0;
+    }
+    to {
+        bottom: 24px;
+        opacity: 1;
+    }
+}
+
 /* --- RTL SPECIFIC --- */
 [dir="rtl"] body {
     font-family: 'Cairo', 'Inter', sans-serif;
@@ -392,4 +433,8 @@ button:focus-visible {
 
 [dir="rtl"] .primary-btn {
     font-family: 'Cairo', 'Inter', sans-serif;
+}
+
+[dir="rtl"] .install-actions {
+    flex-direction: row-reverse;
 }
