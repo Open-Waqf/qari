@@ -19,9 +19,20 @@ export class PlatformService {
         return this.instance || (this.instance = new PlatformService());
     }
 
+    private backButtonInterceptors: (() => boolean)[] = [];
+
+    public registerBackButton(callback: () => boolean) {
+        this.backButtonInterceptors.push(callback);
+    }
+
     private initializeListeners() {
         if (this.isNative) {
             App.addListener('backButton', ({canGoBack}) => {
+                // Check if any UI component wants to intercept the back button (e.g., closing a modal)
+                for (const interceptor of this.backButtonInterceptors) {
+                    if (interceptor()) return; // If it returns true, it handled the action
+                }
+
                 if (!canGoBack) App.exitApp();
                 else window.history.back();
             });
@@ -33,6 +44,15 @@ export class PlatformService {
             document.addEventListener('visibilitychange', () => {
                 this.dispatchAppState(document.visibilityState === 'visible');
             });
+        }
+    }
+
+    async hapticError() {
+        try {
+            await Haptics.notification({type: NotificationType.Error});
+        } catch {
+            // Distinct double vibration fallback for web
+            if (navigator.vibrate) navigator.vibrate([50, 50, 50]);
         }
     }
 

@@ -82,6 +82,11 @@ export class QariApp extends LitElement {
         this.bindGlobalEvents();
     }
 
+    private handleDeviceChange = () => {
+        // If listening, restart audio manager to pick up new mic
+        if (audioManager.isRunning) void this.handleRestartRequest();
+    };
+
     disconnectedCallback() {
         super.disconnectedCallback();
         this.unbindGlobalEvents();
@@ -97,6 +102,7 @@ export class QariApp extends LitElement {
         window.addEventListener('beforeinstallprompt', this.handleBeforeInstall as EventListener);
         window.addEventListener(EVENTS.DEBUG_MESSAGE, this.handleDebugMessage);
         window.addEventListener(EVENTS.REQUEST_RESTART, this.handleRestartRequest);
+        navigator.mediaDevices?.addEventListener('devicechange', this.handleDeviceChange);
     }
 
     private unbindGlobalEvents() {
@@ -106,6 +112,7 @@ export class QariApp extends LitElement {
         window.removeEventListener('beforeinstallprompt', this.handleBeforeInstall as EventListener);
         window.removeEventListener(EVENTS.DEBUG_MESSAGE, this.handleDebugMessage);
         window.removeEventListener(EVENTS.REQUEST_RESTART, this.handleRestartRequest);
+        navigator.mediaDevices?.removeEventListener('devicechange', this.handleDeviceChange);
     }
 
     private handleRestartRequest = async () => {
@@ -249,6 +256,15 @@ export class QariApp extends LitElement {
     };
 
     // --- Actions ---
+
+    private stopEngine = async () => {
+        await audioManager.stop();
+        this.hasStarted = false;
+        this.isPaused = true;
+        this.resetScanState();
+        this.pillState = 'idle';
+        this.pillText = this.t.paused;
+    };
 
     public async startEngine() {
         if (this.isStarting) return;
@@ -413,15 +429,23 @@ export class QariApp extends LitElement {
                 </main>
 
                 <footer class="app-footer">
-                    <div id="control-layer" style="display: ${showControls ? 'block' : 'none'}">
-                        <button
-                                id="start-btn"
-                                class="primary-btn ${this.errorMsg ? 'error-btn' : ''}"
-                                @click=${() => void this.startEngine()}
-                                ?disabled=${this.isStarting}
-                        >
-                            ${startLabel}
-                        </button>
+                    <div id="control-layer">
+                        ${showControls ? html`
+                            <button
+                                    id="start-btn"
+                                    class="primary-btn ${this.errorMsg ? 'error-btn' : ''}"
+                                    @click=${() => void this.startEngine()}
+                                    ?disabled=${this.isStarting}
+                            >
+                                ${this.isStarting
+                                        ? html`<span class="spinner-icon">⏳</span> ${this.t.loading}`
+                                        : startLabel}
+                            </button>
+                        ` : html`
+                            <button id="stop-btn" class="secondary-btn" @click=${this.stopEngine}>
+                                ${this.t.stopBtn}
+                            </button>
+                        `}
                     </div>
 
                     <match-history id="match-history" .dict=${this.t} .qariMatches=${this.others}></match-history>

@@ -43,7 +43,7 @@
     --accent-glow: rgba(0, 119, 255, 0.4);
     --secondary: #7000ff;
     --text-main: #f0f6fc;
-    --text-dim: #8b949e;
+    --text-dim: #9ca3af;
 }
 
 /* 3. Base Reset - ENABLE SCROLLING */
@@ -56,6 +56,10 @@ body {
     overflow-y: auto;
     overflow-x: hidden;
     -webkit-font-smoothing: antialiased;
+    overscroll-behavior-y: none; /* Prevents scroll bounce */
+    -webkit-tap-highlight-color: transparent; /* Removes blue tap box */
+    user-select: none; /* Prevents accidental text selection */
+    -webkit-user-select: none;
 }
 
 /* --- THE MAIN LAYOUT (Flex Column) --- */
@@ -64,6 +68,8 @@ body {
     flex-direction: column;
     /* Change 100vh to 100dvh (Dynamic Viewport Height) for better mobile browser support */
     min-height: 100dvh;
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
     width: 100%;
     max-width: 600px;
     margin: 0 auto;
@@ -77,6 +83,11 @@ body {
     z-index: 20;
     text-align: center;
     flex-shrink: 0; /* Don't shrink header */
+}
+
+.app-header, p {
+    user-select: auto;
+    -webkit-user-select: auto;
 }
 
 .top-nav {
@@ -95,6 +106,12 @@ body {
     font-family: inherit;
     cursor: pointer;
     font-size: 1rem;
+    min-width: 44px; /* Apple/Google touch target standard */
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s, opacity 0.2s;
 }
 
 .icon-btn {
@@ -108,6 +125,21 @@ body {
     align-items: center;
     justify-content: center;
     cursor: pointer;
+}
+
+.secondary-btn:active, .icon-btn:active, .text-btn:active {
+    transform: scale(0.92) !important;
+    opacity: 0.6;
+}
+
+button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
+    border-radius: 12px;
+}
+
+.primary-btn:focus-visible {
+    border-radius: 30px;
 }
 
 .logo-title {
@@ -162,8 +194,8 @@ body {
     transform: translate(-50%, -50%);
 
     /* Bigger than ring */
-    width: 500px; /* Huge to ensure bleed */
-    height: 500px;
+    width: min(500px, 150vw);
+    height: min(500px, 150vw);
 
     z-index: 1;
     pointer-events: none; /* Let clicks pass through */
@@ -203,12 +235,14 @@ body {
     font-size: 1.1rem;
     cursor: pointer;
     box-shadow: 0 4px 20px rgba(0, 119, 255, 0.3);
-    transition: transform 0.2s;
     width: 100%;
+    transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease, filter 0.2s ease;
 }
 
 .primary-btn:active {
-    transform: scale(0.96);
+    transform: scale(0.95) !important; /* Squishes down when pressed */
+    box-shadow: 0 2px 10px rgba(0, 119, 255, 0.2) !important; /* Glow shrinks */
+    filter: brightness(0.9);
 }
 
 
@@ -221,6 +255,58 @@ body {
     margin-top: 16px;
     width: 100%;
     cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.icon-btn, .text-btn {
+    transition: all 0.2s ease;
+}
+
+@media (hover: hover) {
+    .primary-btn:hover {
+        transform: translateY(-2px); /* Lifts up slightly */
+        box-shadow: 0 8px 25px rgba(0, 119, 255, 0.5); /* Glow gets bigger */
+        filter: brightness(1.1); /* Gets slightly brighter */
+    }
+
+    .secondary-btn:hover {
+        background: rgba(255, 255, 255, 0.05);
+        color: #fff;
+        border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .icon-btn:hover {
+        background: rgba(255, 255, 255, 0.15);
+        transform: scale(1.05);
+    }
+
+    .text-btn:hover {
+        color: #fff;
+    }
+}
+
+.version-tag, .score-value {
+    font-variant-numeric: tabular-nums; /* Forces consistent number widths */
+    font-family: 'JetBrains Mono', monospace;
+}
+
+#status-pill {
+    transition: background-color 0.4s ease, color 0.4s ease;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-width: 90vw;
+}
+
+.version-tag {
+    display: inline-block;
+    font-size: 0.7em;
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-dim);
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 8px;
+    vertical-align: middle;
+    font-family: 'JetBrains Mono', monospace;
 }
 
 /* --- RTL SPECIFIC --- */
@@ -242,19 +328,23 @@ body {
     text-align: center;
 }
 
-.version-tag {
-    display: inline-block;
-    font-size: 0.7em;
-    background: rgba(255, 255, 255, 0.1);
-    color: var(--text-dim);
-    padding: 2px 6px;
-    border-radius: 4px;
-    margin-left: 8px;
-    vertical-align: middle;
-    font-family: 'JetBrains Mono', monospace;
-}
-
 [dir="rtl"] .version-tag {
     margin-left: 0;
     margin-right: 8px;
+}
+
+[dir="rtl"] .logo-title {
+    line-height: 1.4; /* Accommodate Arabic diacritics */
+}
+
+[dir="rtl"] .icon-btn svg {
+    transform: scaleX(-1); /* Flips the recalibrate arrow direction for RTL */
+}
+
+[dir="rtl"] .secondary-btn {
+    font-family: 'Cairo', 'Inter', sans-serif;
+}
+
+[dir="rtl"] .primary-btn {
+    font-family: 'Cairo', 'Inter', sans-serif;
 }

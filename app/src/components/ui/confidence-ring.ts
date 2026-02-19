@@ -39,8 +39,10 @@ export class ConfidenceRing extends LitElement {
 
         .content {
             position: absolute;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -51,6 +53,7 @@ export class ConfidenceRing extends LitElement {
         }
 
         /* Responsive Typography */
+
         .score {
             font-size: 3.5rem;
             font-weight: 800;
@@ -60,6 +63,7 @@ export class ConfidenceRing extends LitElement {
         }
 
         /* When we have a name, shrink score slightly to fit the name */
+
         .score.has-label {
             font-size: 2.8rem;
         }
@@ -93,6 +97,10 @@ export class ConfidenceRing extends LitElement {
             font-weight: 400;
             letter-spacing: 2px;
         }
+
+        .rtl-mode .label.analyzing {
+            letter-spacing: 0; /* Fixes disconnected Arabic letters */
+        }
     `;
 
     render() {
@@ -107,6 +115,8 @@ export class ConfidenceRing extends LitElement {
         const displayLabel = !isAnalyzing ? this.label : analyzingText;
         const strokeColor = this.score > 0.8 ? '#10b981' : '#00d2ff';
 
+        const isRtl = document.documentElement.dir === 'rtl';
+
         return html`
             <svg>
                 <circle class="track" cx="120" cy="120" r="${r}"></circle>
@@ -115,7 +125,7 @@ export class ConfidenceRing extends LitElement {
                         style="stroke: ${strokeColor}">
                 </circle>
             </svg>
-            <div class="content">
+            <div class="content ${isRtl ? 'rtl-mode' : ''}">
                 <div class="score ${!isAnalyzing ? 'has-label' : ''}">
                     ${Math.round(this.score * 100)}<span style="font-size:50%">%</span>
                 </div>
