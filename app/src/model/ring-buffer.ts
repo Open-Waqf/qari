@@ -1,29 +1,24 @@
 export class RingBuffer {
     private buffer: Float32Array;
+    private readBuffer: Float32Array;
+
     private size: number;
     private index: number = 0;
     public isFull: boolean = false;
 
     constructor(durationSeconds: number, sampleRate: number) {
-        this.size = durationSeconds * sampleRate; // e.g., 2.0 * 22050 = 44100
+        this.size = durationSeconds * sampleRate;
         this.buffer = new Float32Array(this.size);
+        this.readBuffer = new Float32Array(this.size);
     }
 
-    /**
-     * Resets the buffer state.
-     */
     clear() {
         this.index = 0;
         this.isFull = false;
         this.buffer.fill(0);
     }
 
-    /**
-     * Optimized write using block memory operations (memcpy)
-     * instead of iterating element-by-element.
-     */
     write(chunk: Float32Array) {
-        // Safety: If chunk is larger than buffer, just take the end
         if (chunk.length >= this.size) {
             this.buffer.set(chunk.subarray(chunk.length - this.size));
             this.index = 0;
@@ -57,18 +52,14 @@ export class RingBuffer {
     }
 
     read(): Float32Array {
-        if (!this.isFull) return new Float32Array(0);
+        if (!this.isFull) return new Float32Array(0); // Rare edge case
 
-        const result = new Float32Array(this.size);
-
-        // 1. Copy oldest data (from index to end) to start of result
         const tail = this.buffer.subarray(this.index);
-        result.set(tail, 0);
+        this.readBuffer.set(tail, 0);
 
-        // 2. Copy newest data (from 0 to index) to end of result
         const head = this.buffer.subarray(0, this.index);
-        result.set(head, tail.length);
+        this.readBuffer.set(head, tail.length);
 
-        return result;
+        return this.readBuffer;
     }
 }

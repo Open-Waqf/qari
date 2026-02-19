@@ -8,6 +8,11 @@ export class CustomAudioExtractor {
     private window: tf.Tensor | null = null;
     private isReady = false;
 
+    // Memory Pooling. Allocate these once for the strict path.
+    // 44100 length = 171 frames of 512 samples
+    private pooledPaddedSignal = new Float32Array(44100);
+    private pooledFlatBuffer = new Float32Array(171 * 512);
+
     async loadConfig(url: string = '/models/audio_config.json') {
         if (this.isReady) return;
         const res = await fetch(url);
@@ -29,36 +34,42 @@ export class CustomAudioExtractor {
         if (!this.isReady) throw new Error("Audio Config not loaded");
 
         const cmvn = !!opts?.cmvn;
-        // 🟢 FIX: Default to TRUE for model safety, but allow FALSE for unit tests
+        // Default to TRUE for model safety, but allow FALSE for unit tests
         const strictShape = opts?.strictShape ?? true;
 
         return tf.tidy(() => {
             let processedSignal = signal;
             const TARGET_LEN = 44100;
 
-            // 🟢 APPLY STRICT PADDING ONLY IF REQUESTED
+            // Use pooled array instead of `new Float32Array`
             if (strictShape) {
                 if (signal.length > TARGET_LEN) {
                     processedSignal = signal.subarray(0, TARGET_LEN);
                 } else if (signal.length < TARGET_LEN) {
-                    processedSignal = new Float32Array(TARGET_LEN);
-                    processedSignal.set(signal);
+                    this.pooledPaddedSignal.fill(0); // clear old data
+                    this.pooledPaddedSignal.set(signal);
+                    processedSignal = this.pooledPaddedSignal;
                 }
             }
 
             const frameSize = 512;
             const hopSize = 256;
-
-            // Use processedSignal (which might be padded OR raw 512)
             const framesCount = Math.floor((processedSignal.length - frameSize) / hopSize) + 1;
 
-            const flatBuffer = new Float32Array(framesCount * frameSize);
-            for (let i = 0; i < framesCount; i++) {
-                const start = i * hopSize;
-                flatBuffer.set(processedSignal.subarray(start, start + frameSize), i * frameSize);
+            // Use pooled flat buffer if sizes match (they will 99.9% of the time in production)
+            let currentFlatBuffer: Float32Array;
+            if (framesCount === 171) {
+                currentFlatBuffer = this.pooledFlatBuffer;
+            } else {
+                currentFlatBuffer = new Float32Array(framesCount * frameSize);
             }
 
-            const signalTensor = tf.tensor2d(flatBuffer, [framesCount, frameSize]);
+            for (let i = 0; i < framesCount; i++) {
+                const start = i * hopSize;
+                currentFlatBuffer.set(processedSignal.subarray(start, start + frameSize), i * frameSize);
+            }
+
+            const signalTensor = tf.tensor2d(currentFlatBuffer, [framesCount, frameSize]);
             const windowed = tf.mul(signalTensor, this.window!);
             const windowedT = windowed.transpose();
 
@@ -69,7 +80,7 @@ export class CustomAudioExtractor {
             const melEnergies = tf.matMul(this.melBasis!, mag);
             const logMel = tf.log(tf.add(melEnergies, 1e-6));
 
-            let mfcc = tf.matMul(this.dctMatrix!, logMel); // [40, Frames]
+            let mfcc = tf.matMul(this.dctMatrix!, logMel);
 
             if (cmvn) {
                 const mean = tf.mean(mfcc, 1, true);

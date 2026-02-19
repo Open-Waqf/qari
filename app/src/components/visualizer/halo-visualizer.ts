@@ -6,6 +6,11 @@ import {audioManager} from '../../core/audio-manager';
 export class HaloVisualizer extends LitElement {
     private canvas!: HTMLCanvasElement;
     private ctx!: CanvasRenderingContext2D;
+    private resizeObserver!: ResizeObserver;
+
+    // Cache dimensions to avoid DOM reads in the loop
+    private w: number = 0;
+    private h: number = 0;
 
     static styles = css`
         :host {
@@ -28,36 +33,46 @@ export class HaloVisualizer extends LitElement {
     firstUpdated() {
         this.canvas = this.shadowRoot!.querySelector('canvas')!;
         this.ctx = this.canvas.getContext('2d')!;
+
+        this.resizeObserver = new ResizeObserver(entries => {
+            for (let entry of entries) {
+                this.w = this.canvas.width = Math.floor(entry.contentRect.width);
+                this.h = this.canvas.height = Math.floor(entry.contentRect.height);
+            }
+        });
+        this.resizeObserver.observe(this);
+
         this.loop();
     }
 
-    loop() {
-        requestAnimationFrame(() => this.loop());
+    disconnectedCallback() {
+        super.disconnectedCallback();
+        if (this.resizeObserver) this.resizeObserver.disconnect();
+    }
 
-        const w = this.canvas.width = this.offsetWidth;
-        const h = this.canvas.height = this.offsetHeight;
+    loop = () => {
+        requestAnimationFrame(this.loop);
 
-        if (!audioManager.analyser) return;
+        if (this.w === 0 || this.h === 0 || !audioManager.analyser) return;
 
         const data = new Uint8Array(audioManager.analyser.frequencyBinCount);
         audioManager.analyser.getByteFrequencyData(data);
 
-        // Calculate "Energy" (Volume)
         let sum = 0;
-        // Focus on voice frequencies (indexes 10 to 100)
         for (let i = 10; i < 100; i++) sum += data[i];
-        const energy = sum / 90; // Average volume 0-255
+        const energy = sum / 90;
 
-        // Draw the "Halo"
-        const radius = 100 + (energy * 1.5); // Expands with voice
+        // 🟢 FIX: Clear the old frame explicitly since we are no longer resetting canvas.width
+        this.ctx.clearRect(0, 0, this.w, this.h);
 
-        const gradient = this.ctx.createRadialGradient(w / 2, h / 2, radius * 0.2, w / 2, h / 2, radius);
+        const radius = 100 + (energy * 1.5);
+        const gradient = this.ctx.createRadialGradient(this.w / 2, this.h / 2, radius * 0.2, this.w / 2, this.h / 2, radius);
         gradient.addColorStop(0, 'rgba(0, 210, 255, 0)');
-        gradient.addColorStop(0.5, `rgba(0, 210, 255, ${energy / 800})`); // Faint glow
+        gradient.addColorStop(0.5, `rgba(0, 210, 255, ${energy / 800})`);
         gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
         this.ctx.fillStyle = gradient;
-        this.ctx.fillRect(0, 0, w, h);
+        this.ctx.fillRect(0, 0, this.w, this.h);
     }
 
     render() {
