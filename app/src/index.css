@@ -310,32 +310,40 @@ button:focus-visible {
 }
 
 /* --- PWA Update Toast --- */
+/* --- PWA Update Toast --- */
 .pwa-toast {
     position: fixed;
-    bottom: -100px; /* Hidden by default */
+    /* Move it far enough down to be completely off-screen */
+    bottom: -200px;
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(15, 20, 30, 0.95);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-    padding: 16px 24px;
-    border-radius: 16px;
-    z-index: 100;
+    background: rgba(15, 20, 30, 0.98);
+    border: 1px solid rgba(0, 255, 127, 0.3); /* Slight green tint for "Update" */
+    box-shadow: 0 10px 50px rgba(0, 0, 0, 0.8);
+    padding: 16px 20px;
+    border-radius: 20px;
+    z-index: 10000; /* Ensure it's above everything */
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 12px;
-    transition: bottom 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    transition: bottom 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
     width: 90%;
-    max-width: 350px;
-    backdrop-filter: blur(10px);
+    max-width: 340px;
+    backdrop-filter: blur(15px);
+    pointer-events: none; /* Ignore clicks when hidden */
+    opacity: 0;
 }
 
 .pwa-toast.show {
-    bottom: max(24px, env(safe-area-inset-bottom)); /* Slide up into view */
+    /* Slide up and become visible */
+    bottom: max(24px, env(safe-area-inset-bottom));
+    pointer-events: auto; /* Enable clicks when visible */
+    opacity: 1;
 }
 
 .pwa-toast .message {
+    font-size: 0.95rem;
     font-weight: 600;
     color: #fff;
     text-align: center;
@@ -347,11 +355,11 @@ button:focus-visible {
     width: 100%;
 }
 
-.pwa-toast .primary-btn.small,
-.pwa-toast .secondary-btn.small {
+.pwa-toast .actions button {
+    flex: 1;
     padding: 10px;
-    font-size: 0.9rem;
-    margin-top: 0;
+    font-size: 0.85rem;
+    border-radius: 12px;
 }
 
 .install-floating-card {
