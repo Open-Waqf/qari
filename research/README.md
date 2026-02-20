@@ -297,11 +297,7 @@ python3.10 -m venv venv_export
 source venv_export/bin/activate
 pip install tensorflow==2.15.0 tensorflowjs==4.17.0
 
-tensorflowjs_converter \
-  --input_format=tf_saved_model \
-  --output_format=tfjs_graph_model \
-  ./models/qari_model_export \
-  ./app/public/models/tfjs_model
+tensorflowjs_converter     --input_format=tf_saved_model     --output_format=tfjs_graph_model     ./models/qari_model_export     ../app/public/models/tfjs_model
 ```
 
 ---

@@ -1,0 +1,26 @@
+                        precision    recall  f1-score   support
+
+ abdulbasit_abdulsamad      0.936     0.962     0.949       106
+    abdulrahman_sudais      0.957     1.000     0.978        44
+    ahmed_talib_hameed      0.983     0.983     0.983        60
+          ali_hudhaify      1.000     0.984     0.992        62
+             ali_jaber      0.971     1.000     0.986        34
+           fares_abbad      1.000     0.906     0.951        32
+           idrees_abkr      1.000     1.000     1.000        46
+           islam_sobhi      0.000     0.000     0.000         0
+      maher_al_muaiqly      1.000     0.969     0.984        32
+     mansour_al_salimi      1.000     0.981     0.991        54
+      mishary_al_afasy      1.000     1.000     1.000        66
+  muhammad_al_lohaidan      1.000     1.000     1.000        64
+muhammad_sidiq_mishawi      0.955     1.000     0.977        64
+      nasser_al_qatami      1.000     1.000     1.000        38
+         raad_al_kurdi      0.977     0.955     0.966        44
+        saad_al_ghamdi      1.000     1.000     1.000        52
+      salman_al_otaibi      1.000     0.964     0.982        56
+          saud_shuraim      1.000     1.000     1.000        22
+     yasser_al_dossary      1.000     1.000     1.000        38
+           _background      0.966     0.947     0.957       152
+
+              accuracy                          0.978      1066
+             macro avg      0.937     0.933     0.935      1066
+          weighted avg      0.982     0.978     0.980      1066

@@ -1,0 +1,22 @@
+{
+  "sr": 22050,
+  "duration_sec": 2.0,
+  "samples_per_chunk": 44100,
+  "frame_length": 512,
+  "hop_length": 256,
+  "expected_frames": 171,
+  "rms_min_reciter": 0.01,
+  "rms_min_bg": 0.003,
+  "target_rms": 0.1,
+  "min_gain": 0.6,
+  "max_gain": 5.0,
+  "rms_floor": 0.002,
+  "cap_minutes_default": 15.0,
+  "cap_minutes_by_class": {
+    "_background": 20.0
+  },
+  "cap_seed": 42,
+  "audio_config_sha256": "f64bd3f9e7742c868168e4ff5824950d590d48813b5ee796558be0f7e9ffa6db",
+  "num_samples": 24098,
+  "num_classes": 20
+}
