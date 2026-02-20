@@ -2,11 +2,15 @@ import hashlib
 import json
 import os
 import random
+import sys
+import time
 from pathlib import Path
 
 import librosa
 import numpy as np
 from audiomentations import Compose, AddGaussianNoise, HighPassFilter, LowPassFilter, Gain
+
+sys.stdout.reconfigure(line_buffering=True)
 
 # ==========================================
 # ⚡ CORE SETTINGS (Synced with App Parity)
@@ -42,6 +46,12 @@ CAP_MINUTES_BY_CLASS = {
 }
 
 CAP_SEED = 42
+
+# 🟢 NEW: Per-file cap (prevents single long recording dominating val/test)
+CAP_MINUTES_PER_FILE_DEFAULT = 4.0
+CAP_MINUTES_PER_FILE_BY_CLASS = {
+    "_background": 1.0
+}
 
 # Make dataset generation as deterministic as practical.
 # (Note: some audio decoding/augmentation operations can still vary across platforms.)
@@ -82,6 +92,17 @@ def normalize_signal(x: np.ndarray) -> np.ndarray:
     y = x * g
     y = np.clip(y, -1.0, 1.0)
     return y.astype(np.float32, copy=False)
+
+
+def sha256_file(path: str, chunk_size: int = 1024 * 1024) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(chunk_size)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
 
 
 def load_or_update_reciters_map(data_path: str) -> list[str]:
@@ -159,6 +180,11 @@ def load_matrices():
 
 
 MATRICES = load_matrices()
+print("audio_config hash:", MATRICES.get("_config_hash"))
+print("dft_real:", MATRICES["dft_real"].shape)
+print("mel_basis:", MATRICES["mel_basis"].shape)
+print("dct_matrix:", MATRICES["dct_matrix"].shape)
+print("window:", MATRICES["window"].shape)
 
 
 def extract_features_matrix(frame_512: np.ndarray) -> np.ndarray:
@@ -196,6 +222,7 @@ def _mfcc_image_from_chunk(chunk: np.ndarray) -> np.ndarray:
 
 def process_dataset():
     X, y, groups, is_clean = [], [], [], []
+    group_meta = {}  # group_id -> {class,file,rel_path,sha256}
 
     reciters = load_or_update_reciters_map(DATA_PATH)
     print(f"Locked class order ({len(reciters)}): {reciters}")
@@ -232,7 +259,11 @@ def process_dataset():
         files = list(files)
         rng.shuffle(files)
         cap_windows = max_windows_by_class.get(reciter)
+        # Per-file cap (in clean windows) to avoid one long file dominating
+        file_cap_minutes = CAP_MINUTES_PER_FILE_BY_CLASS.get(reciter, CAP_MINUTES_PER_FILE_DEFAULT)
+        file_cap_windows = minutes_to_max_windows(file_cap_minutes) if file_cap_minutes else None
         kept_windows = 0  # counts CLEAN windows (dirty is paired)
+        t_decode = t_feat = t_aug = 0.0
 
         for file in files:
             if not file.lower().endswith((".mp3", ".wav")):
@@ -244,11 +275,35 @@ def process_dataset():
 
             file_path = os.path.join(reciter_path, file)
 
+            kept_windows_in_file = 0
+
+            # Save group metadata for debugging / disjointness checks
+            rel_path = f"{reciter}/{file}"
+            try:
+                group_meta[int(file_counter)] = {
+                    "class": reciter,
+                    "file": file,
+                    "rel_path": rel_path,
+                    "sha256": sha256_file(file_path),
+                }
+            except Exception as _e:
+                group_meta[int(file_counter)] = {
+                    "class": reciter,
+                    "file": file,
+                    "rel_path": rel_path,
+                    "sha256": None,
+                }
+
             try:
                 # Explicit decode behavior (more stable)
+                t0 = time.perf_counter()
                 audio, _ = librosa.load(
                     file_path, sr=SR, mono=True, res_type="soxr_hq"
                 )
+                t_decode += time.perf_counter() - t0
+                if kept_windows and kept_windows % 200 == 0:
+                    print(
+                        f"⏱ decode={t_decode:.1f}s feat+dirtyfeat={t_feat:.1f}s aug={t_aug:.1f}s windows={kept_windows}")
                 audio = audio.astype(np.float32, copy=False)
             except Exception as e:
                 print(f"Error loading {file}: {e}")
@@ -263,6 +318,10 @@ def process_dataset():
             for start in range(0, last_start + 1, step):
                 # ✅ Stop as soon as cap reached (before doing any work)
                 if cap_windows is not None and kept_windows >= cap_windows:
+                    break
+
+                # ✅ Also cap per-file (prevents val/test dominated by a single recording)
+                if file_cap_windows is not None and kept_windows_in_file >= file_cap_windows:
                     break
 
                 chunk = audio[start:start + SAMPLES_PER_CHUNK]
@@ -284,10 +343,14 @@ def process_dataset():
                         raise ValueError("Non-finite values in normalized chunk")
 
                     # 1. CLEAN (Use normalized)
+                    t0 = time.perf_counter()
                     clean_entry = _mfcc_image_from_chunk(norm_chunk)
+                    t_feat += time.perf_counter() - t0
 
                     # 2. DIRTY (Augment the normalized chunk)
+                    t0 = time.perf_counter()
                     dirty_chunk = augment(samples=norm_chunk, sample_rate=SR).astype(np.float32, copy=False)
+                    t_aug += time.perf_counter() - t0
 
                     if len(dirty_chunk) > SAMPLES_PER_CHUNK:
                         dirty_chunk = dirty_chunk[:SAMPLES_PER_CHUNK]
@@ -299,7 +362,9 @@ def process_dataset():
                     # Keep dirty chunk in a realistic waveform range
                     dirty_chunk = np.clip(dirty_chunk, -1.0, 1.0).astype(np.float32, copy=False)
 
+                    t0 = time.perf_counter()
                     dirty_entry = _mfcc_image_from_chunk(dirty_chunk)
+                    t_feat += time.perf_counter() - t0
 
                     # Append only if both succeeded (unchanged behavior)
                     # 1. CLEAN (Weight 1.0)
@@ -316,6 +381,10 @@ def process_dataset():
 
                     # ✅ IMPORTANT: count 1 “window” per CLEAN+DIRTY pair
                     kept_windows += 1
+                    kept_windows_in_file += 1
+                    if kept_windows % 200 == 0:
+                        print(
+                            f"⏱ {reciter}: decode={t_decode:.1f}s feat={t_feat:.1f}s aug={t_aug:.1f}s (kept_windows={kept_windows})")
 
                 except Exception as e:
                     print(f"⚠️ Augmentation failed, skipping chunk pair: {e}")
@@ -353,6 +422,13 @@ def process_dataset():
     os.makedirs(Path(OUTPUT_PATH).parent, exist_ok=True)
     np.savez(OUTPUT_PATH, X=X, y=y, groups=groups, is_clean=is_clean, mapping=label_map)
     print(f"Saved to {OUTPUT_PATH}")
+
+
+    # 🔎 Save group metadata so we can trace failures back to files
+    groups_meta_path = Path(OUTPUT_PATH).with_name("groups_meta.json")
+    with open(groups_meta_path, "w", encoding="utf-8") as f:
+        json.dump(group_meta, f, indent=2)
+    print(f"🧾 Wrote groups meta: {groups_meta_path}")
 
     # Write a small metadata file for parity/audit traceability
     meta = {

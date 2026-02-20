@@ -1,12 +1,15 @@
 import json
 import os
 import random
+import sys
+from collections import Counter, defaultdict
 
 import numpy as np
 import tensorflow as tf
-from sklearn.model_selection import GroupShuffleSplit
 from sklearn.utils.class_weight import compute_class_weight
 from tensorflow import keras
+
+sys.stdout.reconfigure(line_buffering=True)
 
 # Settings
 BATCH_SIZE = 64
@@ -20,6 +23,11 @@ np.random.seed(SEED)
 try:
     tf.keras.utils.set_random_seed(SEED)
     tf.config.experimental.enable_op_determinism()
+    # Prevent occasional TF layout optimizer crashes on some GPU/TF builds
+    try:
+        tf.config.optimizer.set_experimental_options({"layout_optimizer": False})
+    except Exception:
+        pass
 except Exception:
     pass
 
@@ -126,15 +134,140 @@ def train_model():
     # ---------------------------------------------------------
     # 🟢 FIX 1: Create a true 3-way split BEFORE normalization
     # ---------------------------------------------------------
-    splitter_1 = GroupShuffleSplit(test_size=0.20, n_splits=1, random_state=SEED)
-    train_idx, temp_idx = next(splitter_1.split(X, y, groups))
 
-    splitter_2 = GroupShuffleSplit(test_size=0.50, n_splits=1, random_state=SEED)
-    val_rel, test_rel = next(splitter_2.split(X[temp_idx], y[temp_idx], groups[temp_idx]))
-    val_idx = temp_idx[val_rel]
-    test_idx = temp_idx[test_rel]
+    def make_group_coverage_split(groups, y, is_clean, val_frac=0.10, test_frac=0.10, seed=42):
+        """Size-aware, group-aware split that avoids starving low-file classes.
 
-    # Fail-loud leakage checks: no shared groups across splits
+        Key production rules:
+        - Never leak groups across splits.
+        - Keep enough groups in TRAIN per class to actually learn:
+            * if a class has >=3 groups -> keep at least 2 in train
+            * otherwise -> keep at least 1 in train
+        - Only allocate BOTH val+test for a class if it has >=4 groups.
+          (With 3 groups, allocating val+test leaves only 1 in train -> classic starvation.)
+        - Prefer sending *smaller* groups (fewer clean windows) to val/test.
+        """
+        rng = np.random.default_rng(seed)
+
+        groups = np.asarray(groups)
+        y = np.asarray(y)
+        is_clean = np.asarray(is_clean).astype(bool)
+
+        uniq_groups = np.unique(groups)
+
+        # group -> single label (assert consistent)
+        group_label = {}
+        for g in uniq_groups:
+            ys = y[groups == g]
+            if not np.all(ys == ys[0]):
+                raise ValueError(f"Group {g} contains multiple labels (dataset bug).")
+            group_label[g] = int(ys[0])
+
+        # group "size" = number of CLEAN windows (dirty is paired anyway)
+        # If is_clean isn't reliable, fallback to total count.
+        clean_counts = Counter(groups[is_clean].tolist())
+        def gsize(g):
+            return int(clean_counts.get(g, np.sum(groups == g)))
+
+        # buckets: class -> list of groups
+        by_class = defaultdict(list)
+        for g, cls in group_label.items():
+            by_class[cls].append(g)
+
+        # Deterministic-ish tie-breaking: shuffle then sort by size
+        for cls in by_class:
+            rng.shuffle(by_class[cls])
+            by_class[cls].sort(key=gsize)  # smallest first
+
+        total_groups = len(uniq_groups)
+        target_val = max(1, int(round(val_frac * total_groups)))
+        target_test = max(1, int(round(test_frac * total_groups)))
+
+        val_groups = []
+        test_groups = []
+        train_groups = []
+
+        # per-class minimum train groups (avoid starvation)
+        total_groups_per_class = {cls: len(gs) for cls, gs in by_class.items()}
+        min_train_required = {
+            cls: (2 if total_groups_per_class.get(cls, 0) >= 3 else 1)
+            for cls in total_groups_per_class
+        }
+
+        # 1) Per-class allocation (train-first)
+        classes = sorted(by_class.keys())
+        for cls in classes:
+            gs = by_class[cls]
+
+            if len(gs) >= 4:
+                # smallest -> val/test, rest -> train
+                val_groups.append(gs.pop(0))
+                test_groups.append(gs.pop(0))
+                train_groups.extend(gs)
+            elif len(gs) == 3:
+                # keep 2 in train, 1 in val (no test for this class)
+                val_groups.append(gs.pop(0))
+                train_groups.extend(gs)  # remaining 2
+            elif len(gs) == 2:
+                val_groups.append(gs.pop(0))
+                train_groups.append(gs.pop(0))
+            elif len(gs) == 1:
+                train_groups.append(gs.pop(0))
+
+        # 2) Fill up val/test to targets by moving *small* groups from train,
+        # while respecting per-class min_train_required.
+        train_counts = Counter(group_label[g] for g in train_groups)
+
+        # keep train groups ordered smallest->largest for moving
+        train_groups.sort(key=gsize)
+
+        def _take_safe(dst, n):
+            n = max(0, n)
+            moved = 0
+            i = 0
+            while moved < n and i < len(train_groups):
+                g = train_groups[i]
+                cls = group_label[g]
+                if train_counts[cls] <= min_train_required.get(cls, 1):
+                    i += 1
+                    continue
+
+                # move g from train -> dst
+                train_groups.pop(i)
+                train_counts[cls] -= 1
+                dst.append(g)
+                moved += 1
+                # do NOT increment i; list shrank
+
+            if moved < n:
+                print(f"⚠️ Could not fully fill split without starving train. Requested={n}, moved={moved}")
+
+        _take_safe(val_groups, target_val - len(val_groups))
+        _take_safe(test_groups, target_test - len(test_groups))
+
+        final_train_groups = np.array(train_groups, dtype=uniq_groups.dtype)
+        final_val_groups = np.array(val_groups, dtype=uniq_groups.dtype)
+        final_test_groups = np.array(test_groups, dtype=uniq_groups.dtype)
+
+        train_idx = np.where(np.isin(groups, final_train_groups))[0]
+        val_idx = np.where(np.isin(groups, final_val_groups))[0]
+        test_idx = np.where(np.isin(groups, final_test_groups))[0]
+
+        return train_idx, val_idx, test_idx
+
+    # ---------------------------------------------------------
+    # ✅ Coverage-safe 3-way split (group aware + class coverage)
+    # ---------------------------------------------------------
+    train_idx, val_idx, test_idx = make_group_coverage_split(
+        groups=groups,
+        y=y,
+        is_clean=is_clean,
+        val_frac=0.10,
+        test_frac=0.10,
+        seed=SEED
+    )
+
+    # leakage check
     train_groups = set(groups[train_idx].tolist())
     val_groups = set(groups[val_idx].tolist())
     test_groups = set(groups[test_idx].tolist())
@@ -143,6 +276,52 @@ def train_model():
 
     os.makedirs("models", exist_ok=True)
     np.savez("models/splits.npz", train_idx=train_idx, val_idx=val_idx, test_idx=test_idx, seed=SEED)
+
+    def _classes_present(idxs):
+        return set(np.unique(y[idxs]).tolist())
+
+    tr = _classes_present(train_idx)
+    va = _classes_present(val_idx)
+    te = _classes_present(test_idx)
+
+    print(f"📌 Split coverage: train={len(tr)} classes, val={len(va)} classes, test={len(te)} classes")
+    missing_val = sorted(set(range(num_classes)) - va)
+    missing_test = sorted(set(range(num_classes)) - te)
+    missing_both = sorted(set(range(num_classes)) - (va | te))
+    if missing_val: print("⚠️ Missing from VAL:", missing_val)
+    if missing_test: print("⚠️ Missing from TEST:", missing_test)
+    if missing_both: print("🚨 Missing from BOTH val+test:", missing_both)
+
+    missing_train = sorted(set(range(num_classes)) - tr)
+    if missing_train:
+        inv = {v: k for k, v in mapping.items()}
+        print("🚨 Missing from TRAIN:", missing_train, [inv[i] for i in missing_train])
+        raise ValueError("Split invalid: train is missing classes. Fix group split logic.")
+
+    inv = {v: k for k, v in mapping.items()}  # idx -> name
+
+    def print_split_stats(name: str, idxs: np.ndarray):
+        idxs = np.asarray(idxs)
+        cls_counts = Counter(y[idxs].tolist())
+        uniq_groups_total = len(np.unique(groups[idxs]))
+
+        # per-class unique groups
+        cls_groups = defaultdict(set)
+        for i in idxs:
+            cls_groups[int(y[i])].add(int(groups[i]))
+
+        print(f"\n📊 {name} split stats:")
+        print(f"  samples={len(idxs)} | unique_groups={uniq_groups_total} | classes={len(cls_counts)}")
+
+        # show all classes in order
+        for cls in range(num_classes):
+            c = cls_counts.get(cls, 0)
+            g = len(cls_groups.get(cls, set()))
+            print(f"   - {cls:02d} {inv[cls]:20s}: samples={c:5d} | uniq_groups={g}")
+
+    print_split_stats("TRAIN", train_idx)
+    print_split_stats("VAL", val_idx)
+    print_split_stats("TEST", test_idx)
 
     # ---------------------------------------------------------
     # 🟢 FIX 2: Calculate Normalization Stats on TRAIN set ONLY
@@ -180,10 +359,16 @@ def train_model():
     with open(f"{model_output_dir}/normalization.json", "w") as f:
         json.dump({"mean": mean, "std": std, "seed": SEED, "computed_on": "train_clean_only"}, f)
 
-    print("⚖️ Calculating class weights...")
-    classes = np.unique(y_train)
-    weights = compute_class_weight(class_weight='balanced', classes=classes, y=y_train)
+    print("⚖️ Calculating class weights (clean train only)...")
+    clean_train_mask = is_clean[train_idx]
+    y_train_clean_only = y_train[clean_train_mask]
+    classes = np.unique(y_train_clean_only)
+    weights = compute_class_weight(class_weight='balanced', classes=classes, y=y_train_clean_only)
     class_weights_dict = dict(zip(classes, weights))
+    # Optional safety clamp (prevents rare classes from exploding gradients)
+    MAX_W = 6.0
+    for k in list(class_weights_dict.keys()):
+        class_weights_dict[k] = float(min(class_weights_dict[k], MAX_W))
 
     print(f"✅ Data Ready. Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
 
@@ -276,6 +461,29 @@ def train_model():
     test_is_clean = is_clean[test_idx]
     _eval("Test (clean)", X_test[test_is_clean], y_test[test_is_clean])
     _eval("Test (dirty)", X_test[~test_is_clean], y_test[~test_is_clean])
+
+    from sklearn.metrics import confusion_matrix, classification_report
+
+    print("\n🧩 Confusion Matrix + Classification Report (TEST all):")
+    y_pred = np.argmax(model.predict(X_test, batch_size=BATCH_SIZE, verbose=0), axis=1)
+
+    labels = list(range(num_classes))
+    target_names = [inv[i] for i in labels]
+
+    cm = confusion_matrix(y_test, y_pred, labels=labels)
+    print("Confusion matrix (rows=true, cols=pred):")
+    print(cm)
+
+    print("\nClassification report:")
+    print(classification_report(y_test, y_pred, labels=labels, target_names=target_names, digits=3))
+
+    # Save artifacts (easy to inspect later)
+    os.makedirs("models", exist_ok=True)
+    np.savetxt("models/confusion_matrix.csv", cm, delimiter=",", fmt="%d")
+    with open("models/classification_report.txt", "w", encoding="utf-8") as f:
+        f.write(classification_report(y_test, y_pred, labels=labels, target_names=target_names, digits=3))
+
+    print("✅ Wrote: models/confusion_matrix.csv and models/classification_report.txt")
 
 
 if __name__ == "__main__":
