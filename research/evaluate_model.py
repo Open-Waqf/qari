@@ -8,6 +8,9 @@ import librosa
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
+import sys
+
+sys.stdout.reconfigure(line_buffering=True)
 
 # -----------------------------
 # 🎚️ DEFAULTS
@@ -16,7 +19,6 @@ SR = 22050
 WINDOW_SEC_DEFAULT = 2.0
 HOP_SEC_DEFAULT = 1.0  # 50% overlap for 2s window (optional but consistent)
 RMS_MIN_DEFAULT = 0.01  # match prepare_data.py filter for alignment
-RMS_MIN_RECITER = 0.01
 RMS_MIN_BG = 0.003
 
 
@@ -102,7 +104,8 @@ def extract_mfcc_image(chunk: np.ndarray, m: Matrices) -> np.ndarray:
 class DspConfig:
     target_rms: float = 0.10
     min_gain: float = 0.6
-    max_gain: float = 2.5
+    # Keep parity with app + prepare_data.py
+    max_gain: float = 5.0
     rms_floor: float = 0.002
     pre_emph: float = 0.95
 
@@ -331,8 +334,7 @@ def evaluate_suite(
             chunk = audio[s: s + win]
             if chunk.shape[0] != win:
                 continue
-            rms_gate = RMS_MIN_BG if expected_label == "_background" else RMS_MIN_RECITER
-
+            rms_gate = RMS_MIN_BG if expected_label == "_background" else rms_min
             if calculate_rms(chunk) < rms_gate:
                 continue
 
@@ -377,8 +379,11 @@ def evaluate_suite(
         yt = np.array(y_true, dtype=np.int64)
         yp = np.array(y_pred, dtype=np.int64)
 
-        far = float(np.mean((yt == bg_idx) & (yp != bg_idx)))  # bg -> reciter
-        frr = float(np.mean((yt != bg_idx) & (yp == bg_idx)))  # reciter -> bg
+        bg_mask = (yt == bg_idx)
+        rec_mask = (yt != bg_idx)
+
+        far = float(np.mean(yp[bg_mask] != bg_idx)) if np.any(bg_mask) else 0.0
+        frr = float(np.mean(yp[rec_mask] == bg_idx)) if np.any(rec_mask) else 0.0
 
         rec_mask = (yt != bg_idx)
         rec_only_acc = float(np.mean(yp[rec_mask] == yt[rec_mask])) if np.any(rec_mask) else 0.0
@@ -470,7 +475,8 @@ def main():
 
     p.add_argument("--root_dir", default="datasets/audio_test_sets",
                    help="Root folder containing golden/ and challenge/")
-    p.add_argument("--suite", choices=["golden", "challenge", "both"], default="both")
+    p.add_argument("--suite", default="both",
+                   help="Suite name under root_dir (e.g. golden, challenge, golden_autofill, both)")
 
     p.add_argument("--model", default="models/qari_model.keras", help="Path to the model to evaluate")
     p.add_argument("--audio_config", default="models/audio_config.json")
@@ -492,11 +498,19 @@ def main():
     p.add_argument("--fail_on_high_conf_error", type=float, default=None,
                    help="If set, fail when any wrong prediction has confidence >= this value (e.g. 0.70)")
 
+    # Golden suite quality gate: prevent "silent pass" when many classes have 0 support.
+    # Set to 1.0 in CI once your golden/ folder includes >=1 clip per class.
+    p.add_argument("--min_class_coverage", type=float, default=0.0,
+                   help="If >0, fail when evaluated classes / total classes < this fraction (e.g. 0.8, 1.0)")
+
     args = p.parse_args()
     cwd = Path.cwd()
 
     root = (cwd / args.root_dir).resolve()
-    suites = ["golden", "challenge"] if args.suite == "both" else [args.suite]
+    if args.suite == "both":
+        suites = ["golden", "challenge"]
+    else:
+        suites = [args.suite]
 
     suite_to_baseline = {
         "golden": (cwd / args.baseline_golden).resolve(),
@@ -507,7 +521,7 @@ def main():
 
     for suite in suites:
         suite_dir = root / suite
-        baseline_path = suite_to_baseline[suite]
+        baseline_path = suite_to_baseline.get(suite, None)
 
         metrics, results = evaluate_suite(
             suite_name=suite,
@@ -536,6 +550,24 @@ def main():
             f"📊 RESULTS: Acc={metrics.accuracy:.2%} | F1(seen)={metrics.macro_f1_seen:.2%} | F1(all)={metrics.macro_f1_all:.2%}")
         print("=" * 60)
 
+        # ---------------------------------------------------------
+        # ✅ Golden suite completeness check
+        # ---------------------------------------------------------
+        total_classes = len(metrics.per_class)
+        covered = sum(1 for s in metrics.per_class.values() if float(s.get("support", 0)) > 0)
+        coverage = (covered / total_classes) if total_classes else 0.0
+
+        missing = [cls for cls, s in metrics.per_class.items() if float(s.get("support", 0)) <= 0]
+        if missing:
+            print(f"\n⚠️  Coverage warning: {len(missing)}/{total_classes} classes had 0 support in this suite.")
+            print("   Missing:", ", ".join(missing[:20]) + (" ..." if len(missing) > 20 else ""))
+
+        if args.min_class_coverage and coverage < args.min_class_coverage:
+            print(
+                f"\n❌ [{suite}] FAILED: class coverage {coverage:.1%} < required {args.min_class_coverage:.1%}."
+            )
+            overall_ok = False
+
         # Optional hard fail on high-confidence wrong preds
         ok_hc, msgs_hc = fail_on_high_conf_errors(results, args.fail_on_high_conf_error)
         if not ok_hc:
@@ -544,20 +576,24 @@ def main():
             for m in msgs_hc:
                 print(f"   - {m}")
 
-        if args.update_baseline:
-            meta = vars(args).copy()
-            meta["suite"] = suite
-            save_baseline(baseline_path, metrics, meta)
-            print(f"✅ [{suite}] Baseline UPDATED at {baseline_path.name}")
-        else:
-            ok, msgs = compare_to_baseline(metrics, baseline_path, args.strict)
-            if ok:
-                print(f"✅ [{suite}] PASSED: No regression detected vs {baseline_path.name}.")
+        if suite in ("golden", "challenge"):
+            if args.update_baseline:
+                meta = vars(args).copy()
+                meta["suite"] = suite
+                save_baseline(baseline_path, metrics, meta)
+                print(f"✅ [{suite}] Baseline UPDATED at {baseline_path.name}")
             else:
-                overall_ok = False
-                print(f"❌ [{suite}] FAILED: Regression detected vs {baseline_path.name}!")
-                for m in msgs:
-                    print(f"   - {m}")
+                ok, msgs = compare_to_baseline(metrics, baseline_path, args.strict)
+                if ok:
+                    print(f"✅ [{suite}] PASSED: No regression detected vs {baseline_path.name}.")
+                else:
+                    overall_ok = False
+                    print(f"❌ [{suite}] FAILED: Regression detected vs {baseline_path.name}!")
+                    for m in msgs:
+                        print(f"   - {m}")
+        else:
+            # Non-baselined suites are informational / coverage-only by default
+            print(f"ℹ️  [{suite}] No baseline comparison (suite is not golden/challenge).")
 
     if not overall_ok:
         raise SystemExit(1)
