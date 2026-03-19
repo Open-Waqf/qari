@@ -4,7 +4,7 @@ import {audioManager} from "../core/audio-manager";
 import {runFileLoopback} from "./file-loopback";
 import {micCap} from "../audio/mic-cap";
 import {downloadBlob, encodeWav} from "./wav";
-import {runMicCapTest} from "./miccap-test";
+import {runLiveReplayTest, runMicCapTest} from "./miccap-test";
 import {runFileTest} from "./file-test";
 
 /**
@@ -106,6 +106,7 @@ export function installMicCapHotkey() {
             const wav = encodeWav(signal, 22050);
             downloadBlob(wav, `miccap_22k_${Date.now()}.wav`);
             await runMicCapTest(signal);
+            await runLiveReplayTest(signal);
         }
     });
 

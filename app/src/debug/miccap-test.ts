@@ -1,4 +1,5 @@
 import {inferenceEngine} from "../model/inference-engine";
+import {EVENTS, type QariResultPayload} from "../core/events";
 
 function rmsOf(x: Float32Array) {
     let sum = 0;
@@ -76,4 +77,62 @@ export async function runMicCapTest(signal: Float32Array) {
     const bestScore = avg[bestIdx];
 
     console.log(`🏁 MICCAP FINAL | avg ent=${entFinal.toFixed(3)} | bestIdx=${bestIdx} score=${(bestScore * 100).toFixed(1)}%`);
+}
+
+export async function runLiveReplayTest(signal: Float32Array) {
+    const SR = 22050;
+    const CHUNK = 4096;
+    const chunkMs = Math.round((CHUNK / SR) * 1000);
+
+    console.log(`🔁 LIVE REPLAY | dur=${(signal.length / SR).toFixed(2)}s | chunk=${CHUNK} | chunkMs=${chunkMs}`);
+
+    inferenceEngine.reset();
+
+    const seen: QariResultPayload[] = [];
+    const onResult = (e: Event) => {
+        const detail = (e as CustomEvent<QariResultPayload>).detail;
+        seen.push(detail);
+
+        const others = detail.others
+            .slice(0, 3)
+            .map(t => `${t.name}:${(t.score * 100).toFixed(1)}%`)
+            .join(" | ");
+
+        console.log(
+            `🔁 LIVE EVENT | winner=${detail.winner.name}:${(detail.winner.score * 100).toFixed(1)}% ` +
+            `stable=${detail.stable ? "yes" : "no"} activity=${detail.activity ?? "-"} ` +
+            `${others ? "| " + others : ""}`
+        );
+    };
+
+    window.addEventListener(EVENTS.RESULT_FOUND, onResult);
+    try {
+        for (let start = 0; start < signal.length; start += CHUNK) {
+            const end = Math.min(signal.length, start + CHUNK);
+            let chunk = signal.subarray(start, end);
+
+            if (chunk.length < CHUNK) {
+                const padded = new Float32Array(CHUNK);
+                padded.set(chunk);
+                chunk = padded;
+            }
+
+            inferenceEngine.handleIncomingAudio(chunk);
+            await new Promise<void>(r => setTimeout(r, chunkMs));
+        }
+
+        // Give the engine enough wall-clock time to finish smoothing/locking.
+        await new Promise<void>(r => setTimeout(r, 2500));
+    } finally {
+        window.removeEventListener(EVENTS.RESULT_FOUND, onResult);
+    }
+
+    const stable = [...seen].reverse().find(e => e.stable && e.winner.name !== "__IDLE__");
+    if (stable) {
+        console.log(
+            `🔁 LIVE FINAL | stable winner=${stable.winner.name}:${(stable.winner.score * 100).toFixed(1)}%`
+        );
+    } else {
+        console.log("🔁 LIVE FINAL | no stable winner");
+    }
 }

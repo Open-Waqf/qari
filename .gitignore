@@ -66,3 +66,6 @@ temp_saved_model/
 # Archive Audio
 research/archive/*.wav
 research/archive/*.mp3
+DATA.md
+.gitignore
+FIXES.md

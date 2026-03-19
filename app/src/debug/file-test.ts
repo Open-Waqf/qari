@@ -99,12 +99,14 @@ export async function runFileTest(file: File) {
         const windowSec = 2; // 🟢 Matches 2.0s Model
 
         if (scanAll) {
+            inferenceEngine.reset();
             for (let s = 0; s + windowSec <= dur; s += step) {
                 await inferenceEngine.predictFromSignal(signal, {
                     startSec: s,
                     windowSec: windowSec,
                     log: true,
-                    dispatchToUI: true
+                    dispatchToUI: true,
+                    independent: false,
                 });
             }
         } else {

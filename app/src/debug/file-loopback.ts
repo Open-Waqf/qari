@@ -1,4 +1,4 @@
-import {runMicCapTest} from "./miccap-test";
+import {runLiveReplayTest, runMicCapTest} from "./miccap-test";
 import {inferenceEngine} from "../model/inference-engine";
 
 async function decodeToBufferInContext(file: File, ctx: AudioContext): Promise<AudioBuffer> {
@@ -74,7 +74,10 @@ export async function runFileLoopback(file: File) {
 
     console.log(`✅ Worklet Output: ${processedSignal.length} samples @ 22050Hz`);
 
+    console.log("🔬 LOOPBACK Phase 1: Windowed classifier check");
     await runMicCapTest(processedSignal);
+    console.log("🔬 LOOPBACK Phase 2: Live state-machine replay");
+    await runLiveReplayTest(processedSignal);
 
     console.log("✅ LOOPBACK done.");
 }
