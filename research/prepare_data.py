@@ -8,7 +8,21 @@ from pathlib import Path
 
 import librosa
 import numpy as np
-from audiomentations import Compose, AddGaussianNoise, HighPassFilter, LowPassFilter, Gain
+from audiomentations import (
+    Compose,
+    OneOf,
+    AddGaussianNoise,
+    AddGaussianSNR,
+    HighPassFilter,
+    LowPassFilter,
+    Gain,
+    BandPassFilter,
+    AirAbsorption,
+    BitCrush,
+    ClippingDistortion,
+    Mp3Compression,
+    TanhDistortion,
+)
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -40,17 +54,17 @@ RMS_FLOOR = 0.002
 # SAFE CAPPING (deterministic)
 # -----------------------------
 # 🟢 CHANGED: Set a default cap to stop "Bullies" automatically
-CAP_MINUTES_DEFAULT = 15.0
+CAP_MINUTES_DEFAULT = float(os.environ.get("QARI_CAP_MINUTES_DEFAULT", "15.0"))
 CAP_MINUTES_BY_CLASS = {
-    "_background": 20.0
+    "_background": float(os.environ.get("QARI_CAP_MINUTES_BACKGROUND", "20.0"))
 }
 
 CAP_SEED = 42
 
 # 🟢 NEW: Per-file cap (prevents single long recording dominating val/test)
-CAP_MINUTES_PER_FILE_DEFAULT = 4.0
+CAP_MINUTES_PER_FILE_DEFAULT = float(os.environ.get("QARI_CAP_MINUTES_PER_FILE_DEFAULT", "4.0"))
 CAP_MINUTES_PER_FILE_BY_CLASS = {
-    "_background": 1.0
+    "_background": float(os.environ.get("QARI_CAP_MINUTES_PER_FILE_BACKGROUND", "1.0"))
 }
 
 # Make dataset generation as deterministic as practical.
@@ -60,17 +74,35 @@ np.random.seed(CAP_SEED)
 
 # --- 1. DEFINE THE "BAD MIC" SIMULATOR ---
 augment = Compose([
-    # Gain: Moderate range (-6 to +3) to avoid extreme quietness that confuses the model
-    Gain(min_gain_db=-6.0, max_gain_db=3.0, p=0.8),
+    # Gain drift between playback volume and browser mic AGC behavior.
+    Gain(min_gain_db=-10.0, max_gain_db=4.0, p=0.85),
 
-    # Noise: Subtle background hiss (Laptop fan / AC)
-    AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.005, p=0.3),
+    # Real speaker-to-mic captures often include either hiss or lower-SNR room noise.
+    OneOf([
+        AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.007, p=1.0),
+        AddGaussianSNR(min_snr_db=8.0, max_snr_db=28.0, p=1.0),
+    ], p=0.45),
 
-    # HighPass: Cuts "Mud" and "Rumble" (80-300Hz)
-    HighPassFilter(min_cutoff_freq=80, max_cutoff_freq=300, p=0.5),
+    # Simulate phone speaker / laptop mic band-limiting.
+    OneOf([
+        BandPassFilter(min_center_freq=650.0, max_center_freq=2400.0, min_bandwidth_fraction=0.6,
+                       max_bandwidth_fraction=1.6, p=1.0),
+        HighPassFilter(min_cutoff_freq=120, max_cutoff_freq=380, p=1.0),
+        LowPassFilter(min_cutoff_freq=2800, max_cutoff_freq=6800, p=1.0),
+    ], p=0.65),
 
-    # LowPass: Cuts "Hiss" but KEEPS Voice Clarity (6000Hz+)
-    LowPassFilter(min_cutoff_freq=6000, max_cutoff_freq=7800, p=0.3),
+    # Speaker-to-air-to-mic high-frequency loss and cheap playback artifacts.
+    AirAbsorption(min_temperature=10.0, max_temperature=20.0, min_humidity=30.0, max_humidity=80.0, p=0.20),
+    BitCrush(min_bit_depth=6, max_bit_depth=12, p=0.12),
+
+    # Cheap-speaker / browser / messaging compression artifacts.
+    Mp3Compression(min_bitrate=24, max_bitrate=96, backend="pydub", p=0.35),
+
+    # Saturation from phone speaker or hot mic path.
+    OneOf([
+        ClippingDistortion(min_percentile_threshold=2, max_percentile_threshold=10, p=1.0),
+        TanhDistortion(min_distortion=0.02, max_distortion=0.18, p=1.0),
+    ], p=0.20),
 ])
 
 
@@ -259,9 +291,18 @@ def process_dataset():
         files = list(files)
         rng.shuffle(files)
         cap_windows = max_windows_by_class.get(reciter)
-        # Per-file cap (in clean windows) to avoid one long file dominating
+        # Per-file cap (in clean windows) to avoid one long file dominating.
+        # Also compute a fair-share budget per file so reduced-cap runs do not
+        # collapse to just the first few shuffled files for large classes.
         file_cap_minutes = CAP_MINUTES_PER_FILE_BY_CLASS.get(reciter, CAP_MINUTES_PER_FILE_DEFAULT)
         file_cap_windows = minutes_to_max_windows(file_cap_minutes) if file_cap_minutes else None
+        fair_share_by_file = {}
+        if cap_windows is not None and files:
+            base = cap_windows // len(files)
+            remainder = cap_windows % len(files)
+            for idx, fname in enumerate(files):
+                fair_share = base + (1 if idx < remainder else 0)
+                fair_share_by_file[fname] = max(1, fair_share)
         kept_windows = 0  # counts CLEAN windows (dirty is paired)
         t_decode = t_feat = t_aug = 0.0
 
@@ -276,6 +317,10 @@ def process_dataset():
             file_path = os.path.join(reciter_path, file)
 
             kept_windows_in_file = 0
+            per_file_limit = file_cap_windows
+            fair_share_limit = fair_share_by_file.get(file)
+            if fair_share_limit is not None:
+                per_file_limit = fair_share_limit if per_file_limit is None else min(per_file_limit, fair_share_limit)
 
             # Save group metadata for debugging / disjointness checks
             rel_path = f"{reciter}/{file}"
@@ -321,7 +366,7 @@ def process_dataset():
                     break
 
                 # ✅ Also cap per-file (prevents val/test dominated by a single recording)
-                if file_cap_windows is not None and kept_windows_in_file >= file_cap_windows:
+                if per_file_limit is not None and kept_windows_in_file >= per_file_limit:
                     break
 
                 chunk = audio[start:start + SAMPLES_PER_CHUNK]
