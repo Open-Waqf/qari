@@ -106,6 +106,67 @@ augment = Compose([
 ])
 
 
+def _apply_random_eq_curve(x: np.ndarray, sr: int) -> np.ndarray:
+    n = int(x.shape[0])
+    spec = np.fft.rfft(x)
+    freqs = np.fft.rfftfreq(n, d=1.0 / sr)
+
+    # Anchor gains modeled on the repro pairs:
+    # less low-end, more 3-6k presence, mild top-end restraint.
+    anchors_hz = np.array([0, 180, 450, 1000, 2200, 3800, 5600, 9000, sr / 2], dtype=np.float32)
+    anchors_gain = np.array([
+        np.random.uniform(0.40, 0.75),  # bass loss
+        np.random.uniform(0.45, 0.80),
+        np.random.uniform(0.60, 0.95),
+        np.random.uniform(0.80, 1.08),
+        np.random.uniform(1.00, 1.35),
+        np.random.uniform(1.18, 1.75),  # upper-mid lift
+        np.random.uniform(1.00, 1.45),
+        np.random.uniform(0.80, 1.10),
+        np.random.uniform(0.70, 1.00),
+    ], dtype=np.float32)
+
+    gains = np.interp(freqs, anchors_hz, anchors_gain).astype(np.float32, copy=False)
+    shaped = np.fft.irfft(spec * gains, n=n)
+    return shaped.astype(np.float32, copy=False)
+
+
+def phone_path_augment(x: np.ndarray, sr: int) -> np.ndarray:
+    y = x.astype(np.float32, copy=True)
+
+    if np.random.rand() < 0.90:
+        y = _apply_random_eq_curve(y, sr)
+
+    # Mild pre-echo / room reflection from speaker-to-mic path.
+    if np.random.rand() < 0.45:
+        delay_ms = float(np.random.uniform(8.0, 28.0))
+        delay = max(1, int(sr * delay_ms / 1000.0))
+        wet = np.zeros_like(y)
+        wet[delay:] = y[:-delay]
+        y = y + np.random.uniform(0.06, 0.16) * wet
+
+    # Small resampling mismatch to mimic browser / device conversion.
+    if np.random.rand() < 0.35:
+        mid_sr = int(np.random.choice([12000, 16000, 18000]))
+        y = librosa.resample(y, orig_sr=sr, target_sr=mid_sr, res_type="soxr_hq")
+        y = librosa.resample(y, orig_sr=mid_sr, target_sr=sr, res_type="soxr_hq")
+        if len(y) > x.shape[0]:
+            y = y[:x.shape[0]]
+        elif len(y) < x.shape[0]:
+            y = np.pad(y, (0, x.shape[0] - len(y)))
+
+    # Mild speaker/mic nonlinearity.
+    if np.random.rand() < 0.30:
+        drive = float(np.random.uniform(1.05, 1.45))
+        y = np.tanh(y * drive) / np.tanh(drive)
+
+    # Keep a little generic dirt, but much less than the old path.
+    if np.random.rand() < 0.35:
+        y = augment(samples=y, sample_rate=sr).astype(np.float32, copy=False)
+
+    return np.clip(y, -1.0, 1.0).astype(np.float32, copy=False)
+
+
 def normalize_signal(x: np.ndarray) -> np.ndarray:
     r = float(np.sqrt(np.mean(x ** 2))) if x.size else 0.0
 
@@ -394,7 +455,7 @@ def process_dataset():
 
                     # 2. DIRTY (Augment the normalized chunk)
                     t0 = time.perf_counter()
-                    dirty_chunk = augment(samples=norm_chunk, sample_rate=SR).astype(np.float32, copy=False)
+                    dirty_chunk = phone_path_augment(norm_chunk, SR)
                     t_aug += time.perf_counter() - t0
 
                     if len(dirty_chunk) > SAMPLES_PER_CHUNK:
