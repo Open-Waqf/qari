@@ -108,6 +108,14 @@ python research/evaluate_model.py --suite golden_autofill --min_class_coverage 1
 python research/tools/export_model_parity.py
 ```
 
+### 10) Collect real phone-capture training data
+
+Use the structured spec in:
+
+```text
+research/PHONE_CAPTURE_COLLECTION.md
+```
+
 ---
 
 ## Test Suites: golden vs challenge vs golden_autofill
